@@ -1353,16 +1353,16 @@ def register(bl_info):
     updater.private_token = None  # "tokenstring"
 
     # Choose your own username, must match website (not needed for GitLab).
-    updater.user = "Ridog8"
+    updater.user = "Dimcirui"
 
     # Choose your own repository, must match git name for GitHUb and Bitbucket,
     # for GitLab use project ID (numbers only).
-    updater.repo = "RE-Mesh-Editor-MeshFixes"
+    updater.repo = "RE-Mesh-Editor-BlendShape"
 
     # updater.addon = # define at top of module, MUST be done first
 
     # Website for manual addon download, optional but recommended to set.
-    updater.website = "https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes"
+    updater.website = "https://github.com/Dimcirui/RE-Mesh-Editor-BlendShape"
 
     # Addon subfolder path.
     # "sample/path/to/addon"

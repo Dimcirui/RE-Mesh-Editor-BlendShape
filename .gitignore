@@ -2,3 +2,9 @@
 # Spyder project settings
 .spyderproject
 .spyproject
+
+# Local caches and per-machine state
+TextureCache/
+__pycache__/
+re-mesh-editor-meshfixes_updater/
+.claude/settings.local.json
