@@ -19,6 +19,7 @@ gameNameToTexVersionDict = {
 	"MHWILDS":241106027,
 	"ONI2":240701001,
 	"MHS3":251111100,
+	"ONIWOTS":251111100,#Same version as MHS3 but textures are stored uncompressed without compression headers
 	"PRAG":250813143,
 	"RE9":250813143,
 	}

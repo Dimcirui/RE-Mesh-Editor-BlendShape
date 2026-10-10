@@ -118,7 +118,7 @@ def convertTexDDSList (fileNameList,inDir,outDir,gameName,createStreamingTex = F
 		for ddsPath in ddsConversionList:
 			texPath = os.path.join(outDir,os.path.splitext(os.path.split(ddsPath)[1])[0])+f".tex.{str(texVersion)}"
 			print(str(texPath))
-			DDSToTex([ddsPath],texVersion,texPath,streamingFlag = False)#TODO Streaming
+			DDSToTex([ddsPath],texVersion,texPath,streamingFlag = False,gameName = gameName)#TODO Streaming
 			conversionCount += 1
 		
 		
@@ -128,7 +128,7 @@ def convertTexDDSList (fileNameList,inDir,outDir,gameName,createStreamingTex = F
 			#print(key)
 			#print(ddsPathList)
 			texPath = os.path.join(outDir,key+f".tex.{str(texVersion)}")
-			DDSToTex(ddsPathList,texVersion,texPath,streamingFlag = False)#TODO Streaming
+			DDSToTex(ddsPathList,texVersion,texPath,streamingFlag = False,gameName = gameName)#TODO Streaming
 			conversionCount += 1
 	
 	ddsToPNGConversionList = []

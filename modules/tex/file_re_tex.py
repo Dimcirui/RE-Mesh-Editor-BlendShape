@@ -21,6 +21,9 @@ GDEFLATE_VERSIONS = set([
 	251111100,#VERSION_MHS3
 	])
 
+#Games that share a GDeflate tex version with another game but store their textures uncompressed
+NO_GDEFLATE_GAMES = set(["ONIWOTS"])
+
 VERSION_MHWILDS_BETA = 240701001
 VERSION_MHWILDS = 241106027
 
@@ -238,7 +241,7 @@ class MipData():
 
     def read(self, file, expectedMipSize, dimensions, formatData,
              currentImageDataHeaderOffset, imageDataOffset,
-             texVersion):
+             texVersion, isGDeflate=None):
         """
         Parameters
         ----------
@@ -256,7 +259,12 @@ class MipData():
             Offset form the start of the file to the start of Texture information
         texVersion : Int
             RE Engine Texture format Version
+        isGDeflate : Bool
+            Whether the mip data has a compression header and may be GDeflate compressed.
+            Determined from the tex version if not specified.
         """
+        if isGDeflate is None:
+            isGDeflate = texVersion in GDEFLATE_VERSIONS
         width, height, depth = dimensions
         self.mipOffset = read_uint64(file)
         self.scanlineLength = read_uint(file)
@@ -268,7 +276,7 @@ class MipData():
         # print(f"{file.tell()}")
         mipData = None  # BytesIO for uncompressed texture data
 
-        if texVersion in GDEFLATE_VERSIONS:# or texVersion == VERSION_MHWILDS_BETA:
+        if isGDeflate:# or texVersion == VERSION_MHWILDS_BETA:
             mipData = self.uncompressGdeflate(file,
                 currentImageDataHeaderOffset, imageDataOffset)
             endSize = mipData.getbuffer().nbytes
@@ -305,10 +313,35 @@ class Tex():
         self.imageMipDataList = []
         self.imageHeaderList = []  # WILDS
 
+    def isRawLayout(self, file):
+        """
+        Versions in GDEFLATE_VERSIONS normally have a compression header per mip after the mip headers.
+        Some games (Onimusha WotS) use the same version but store the mips uncompressed with no headers,
+        in that case the file size is exactly the end of the mip headers plus the size of all mips.
+        """
+        mipHeaderCount = self.header.mipCount * self.header.imageCount
+        mipHeaderStart = file.tell()
+        totalSize = mipHeaderStart + mipHeaderCount * 16
+        expectedOffset = totalSize
+        isSequential = True
+        for i in range(mipHeaderCount):
+            file.seek(mipHeaderStart + i * 16)
+            mipOffset = read_uint64(file)
+            file.seek(4, 1)
+            uncompressedSize = read_uint(file)
+            if mipOffset != expectedOffset:
+                isSequential = False
+            expectedOffset += uncompressedSize
+        file.seek(0, 2)
+        fileSize = file.tell()
+        file.seek(mipHeaderStart)
+        return isSequential and fileSize == expectedOffset
+
     def read(self, file):
         self.header.read(file)
         self.imageMipDataList = []
         fmtData = self.header.formatData
+        isGDeflate = self.header.version in GDEFLATE_VERSIONS and not self.isRawLayout(file)
         currentOverallMipIndex = 0
         currentImageDataHeaderOffset = file.tell() + \
             (self.header.mipCount * self.header.imageCount) * \
@@ -328,7 +361,7 @@ class Tex():
                 expectedMipSize = tmath.ruD(mipY,fmtData.ty) * mipZ * fmtData.bytelen
                 mipEntry.read(file, expectedMipSize, (mipX, mipY, mipZ),
                               fmtData, currentImageDataHeaderOffset,
-                              imageDataOffset, self.header.version)
+                              imageDataOffset, self.header.version, isGDeflate)
                 imageMipDataListEntry.append(mipEntry)
                 currentImageDataHeaderOffset += 8  # 8 is image data header size
             self.imageMipDataList.append(imageMipDataListEntry)

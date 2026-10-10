@@ -1345,7 +1345,8 @@ class ExportREMDF(bpy.types.Operator, ExportHelper):
 				(".40", "Dragon's Dogma 2 / Kunitsu-Gami / Dead Rising", "Dragon's Dogma 2, Kunitsu-Gami, Dead Rising"),
 				(".46", "Onimusha 2", "Onimusha 2"),
 				(".45", "Monster Hunter Wilds", "Monster Hunter Wilds"),
-				(".51", "Resident Evil 9 / Pragmata", "Resident Evil 9 / Pragmata"),
+				(".51", "Resident Evil 9 / Pragmata / Onimusha WotS", "Resident Evil 9 / Pragmata / Onimusha: Way of the Sword.\nOnimusha WotS uses a different .51 layout, set the MDF game to Onimusha: Way of the Sword to export it"),
+				(".50", "Onimusha: Way of the Sword (.50)", "Onimusha: Way of the Sword"),
 				(".49", "Monster Hunter Stories 3", "Monster Hunter Stories 3"),
 			  ]
 		)

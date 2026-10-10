@@ -3,10 +3,10 @@ import bpy
 
 from ..blender_utils import showMessageBox,showErrorMessageBox
 from ..gen_functions import textColors,raiseWarning,splitNativesPath,getAdjacentFileVersion,splitInt64,concatInt
-from .file_re_mdf import readMDF,writeMDF,MDFFile,Material,TextureBinding,Property,gameNameMDFVersionDict,getMDFVersionToGameName,MMTRSData,GPBFEntry,MDFFlags,MDFFlagsB
+from .file_re_mdf import MDF_LAYOUT_ONIWOTS,readMDF,writeMDF,MDFFile,Material,TextureBinding,Property,gameNameMDFVersionDict,getMDFVersionToGameName,MMTRSData,GPBFEntry,MDFFlags,MDFFlagsB
 from .ui_re_mdf_panels import tag_redraw
 
-MDFGameNameConflictDict = set(["RE2","RE2RT","DD2"])
+MDFGameNameConflictDict = set(["RE2","RE2RT","DD2","RE9"])
 
 
 def resolveMDFGameNameConflict(gameName,mdfFile,filePath):
@@ -74,6 +74,9 @@ def resolveMDFGameNameConflict(gameName,mdfFile,filePath):
 					realGameName = "DD2"
 				elif texVersion == 240606151:
 					realGameName = "DR"
+	elif gameName == "RE9":#Onimusha WotS shares mdf version 51, it uses a different material entry layout
+		if mdfFile.layout == MDF_LAYOUT_ONIWOTS:
+			realGameName = "ONIWOTS"
 	if realGameName == None:
 		realGameName = gameName
 	return realGameName
@@ -425,8 +428,10 @@ def buildMDF(mdfCollectionName,mdfVersion = None):
 		materialObjList = sorted([child for child in mdfCollection.all_objects if child.get("~TYPE",None) == "RE_MDF_MATERIAL"],key = lambda item: item.name)
 		newMDFFile = MDFFile()
 		newMDFFile.fileVersion = mdfVersion
+		if mdfVersion == 51 and bpy.context.scene.re_mdf_toolpanel.activeGame == "ONIWOTS":
+			newMDFFile.layout = MDF_LAYOUT_ONIWOTS
 		newMDFFile.Header.version = 1
-		if mdfVersion == 45:#MHWILDS
+		if mdfVersion == 45 or (mdfVersion in (50,51) and bpy.context.scene.re_mdf_toolpanel.activeGame == "ONIWOTS"):#MHWILDS, ONIWOTS
 			newMDFFile.Header.materialFlags = 1
 			
 		for materialObj in materialObjList:

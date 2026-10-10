@@ -20,8 +20,9 @@ gameNameMDFVersionDict = {
 	#40:"DR",
 	45:"MHWILDS",
 	46:"ONI2",
+	50:"ONIWOTS",
 	#51:"PRAG",
-	51:"RE9",
+	51:"RE9",#Onimusha WotS also uses 51, it is told apart by the material layout, see detectMDFLayout
 	
 	"DMC5":10,
 	"RE2":10,
@@ -39,11 +40,35 @@ gameNameMDFVersionDict = {
 	"ONI2":46,
 	"PRAG":51,
 	"RE9":51,
+	"ONIWOTS":51,
 	}
 def getMDFVersionToGameName(gameName):
 	return gameNameMDFVersionDict.get(gameName,-1)
+
+#Version 51 is shared by games with different material entry layouts
+MDF_LAYOUT_RE9 = "RE9"#108 byte material entry, extra uint64 offset before property headers offset
+MDF_LAYOUT_ONIWOTS = "ONIWOTS"#104 byte material entry, extra int (float count of property data) after property count
+def detectMDFLayout(file,version):
+	#Textures headers always directly follow the material entries, so the first material's texture headers offset reveals the entry size
+	if version < 51:
+		return None
+	pos = file.tell()
+	layout = MDF_LAYOUT_RE9
+	try:
+		file.seek(6)
+		materialCount = read_ushort(file)
+		if materialCount > 0:
+			#(layout, material entry size, position of texture headers offset in entry)
+			for candidate,entrySize,texOffsetPos in ((MDF_LAYOUT_RE9,108,68),(MDF_LAYOUT_ONIWOTS,104,64)):
+				file.seek(16 + texOffsetPos)
+				if read_uint64(file) == 16 + entrySize * materialCount:
+					layout = candidate
+					break
+	finally:
+		file.seek(pos)
+	return layout
 class SIZEDATA():
-	def __init__(self,version):
+	def __init__(self,version,layout = None):
 		self.HEADER_SIZE = 16
 		self.MATERIAL_ENTRY_SIZE = 80
 		self.TEXTURE_ENTRY_SIZE = 32
@@ -58,7 +83,7 @@ class SIZEDATA():
 		if version >= 31:
 			self.MATERIAL_ENTRY_SIZE = 100
 		if version >= 51:
-			self.MATERIAL_ENTRY_SIZE = 108
+			self.MATERIAL_ENTRY_SIZE = 104 if layout == MDF_LAYOUT_ONIWOTS else 108
 c_int32 = ctypes.c_int32
 
 
@@ -292,6 +317,7 @@ class Material():
 		self.matNameHash = 0
 		self.propBlockSize = 0
 		self.propertyCount = 0
+		self.propFloatCount = 0#Onimusha WotS .51, end of last property value in floats, trailing padding excluded
 		self.textureCount = 0
 		self.GPBFBufferNameCount = 0
 		self.GPBFBufferPathCount = 0
@@ -321,13 +347,15 @@ class Material():
 		
 	def getPropertyDict(self):
 		return {prop.propName : prop for prop in self.propertyList}
-	def read(self,file,version):
+	def read(self,file,version,layout = None):
 		self.matNameOffset = read_uint64(file)
 		debugprint("matNameOffset:"+str(self.matNameOffset))
 		self.matNameHash = read_uint(file)
 		debugprint("matNameHash:"+str(self.matNameHash))
 		self.propBlockSize = read_int(file)
 		self.propertyCount = read_int(file)
+		if version >= 51 and layout == MDF_LAYOUT_ONIWOTS:
+			self.propFloatCount = read_int(file)
 		self.textureCount = read_int(file)
 		if version >= 19:
 			self.GPBFBufferNameCount = read_int(file)
@@ -344,7 +372,7 @@ class Material():
 			self.flags.asInt32 = read_int(file)
 		#debugprint("flags:"+str(self.flags.asInt32))
 		
-		if version >= 51:
+		if version >= 51 and layout != MDF_LAYOUT_ONIWOTS:
 			self.ver51UnknOffset = read_uint64(file)
 		self.propHeadersOffset = read_uint64(file)
 		self.texHeadersOffset = read_uint64(file)
@@ -407,9 +435,11 @@ class Material():
 			#print(f"\tProperty {i} padding amount: {propertyEntry.padding}")
 		file.seek(currentPos)
 		debugprint(self)
-	def read_fast(self,file,version):
+	def read_fast(self,file,version,layout = None):
 		self.matNameOffset = read_uint64(file)
 		file.seek(12,1)
+		if version >= 51 and layout == MDF_LAYOUT_ONIWOTS:
+			file.seek(4,1)
 		#self.matNameHash = read_uint(file)
 		#self.propBlockSize = read_int(file)
 		#self.propertyCount = read_int(file)
@@ -417,7 +447,7 @@ class Material():
 		file.seek(24,1)
 		if version >= 31:
 			file.seek(12,1)
-		if version >= 51:
+		if version >= 51 and layout != MDF_LAYOUT_ONIWOTS:
 			file.seek(8,1)
 		#self.flags.read(file)
 		#self.shaderType = read_int(file)
@@ -438,7 +468,7 @@ class Material():
 		self.textureList = []
 		for i in range(0,self.textureCount):
 			textureEntry = TextureBinding()
-			textureEntry.read(file)
+			textureEntry.read(file,version)
 			debugprint(textureEntry)
 			self.textureList.append(textureEntry)
 		"""
@@ -451,11 +481,13 @@ class Material():
 			self.propertyList.append(propertyEntry)
 		"""
 		file.seek(currentPos)
-	def write(self,file,version):
+	def write(self,file,version,layout = None):
 		write_uint64(file, self.matNameOffset)
 		write_uint(file, self.matNameHash)
 		write_int(file, self.propBlockSize)
 		write_int(file, self.propertyCount)
+		if version >= 51 and layout == MDF_LAYOUT_ONIWOTS:
+			write_int(file, self.propFloatCount)
 		write_int(file, self.textureCount)
 		if version >= 19:
 			write_int(file,self.GPBFBufferNameCount)
@@ -472,7 +504,7 @@ class Material():
 			write_int(file, self.shaderLODNum)
 		else:
 			write_int(file,self.flags.asInt32)
-		if version >= 51:
+		if version >= 51 and layout != MDF_LAYOUT_ONIWOTS:
 			write_uint64(file, self.ver51UnknOffset)
 		write_uint64(file, self.propHeadersOffset)
 		write_uint64(file, self.texHeadersOffset)
@@ -488,25 +520,28 @@ class Material():
 class MDFFile():
 	def __init__(self):
 		self.fileVersion = 0#Internal
+		self.layout = None#Material entry layout for versions shared by multiple games, see detectMDFLayout
 		self.sizeData = None
 		self.Header = MDFHeader()
 		self.materialList = []
 		self.stringList = []#Used during writing
 	def read(self,file,version):
+		self.layout = detectMDFLayout(file,version)
 		self.Header.read(file)
 		debugprint(self.Header)
 		for i in range(0,self.Header.materialCount):
 			materialEntry = Material()
-			materialEntry.read(file,version)
+			materialEntry.read(file,version,self.layout)
 			debugprint(materialEntry)
 			self.materialList.append(materialEntry)
 		
 	def read_fast(self,file,version):
+		self.layout = detectMDFLayout(file,version)
 		self.Header.read_fast(file)
 		debugprint(self.Header)
 		for i in range(0,self.Header.materialCount):
 			materialEntry = Material()
-			materialEntry.read_fast(file,version)
+			materialEntry.read_fast(file,version,self.layout)
 			debugprint(materialEntry)
 			self.materialList.append(materialEntry)
 	
@@ -515,7 +550,7 @@ class MDFFile():
 	
 	def recalculateHashesAndOffsets(self,version):
 		self.Header.materialCount = len(self.materialList)
-		self.sizeData = SIZEDATA(version)
+		self.sizeData = SIZEDATA(version,self.layout)
 		materialEntriesSize = self.sizeData.MATERIAL_ENTRY_SIZE * len(self.materialList)
 		textureEntriesSize = 0
 		propertyEntriesSize = 0
@@ -560,6 +595,8 @@ class MDFFile():
 				prop.asciiMMH3Hash = hashUTF8(prop.propName)
 				prop.unicodeMMH3Hash = hashUTF16(prop.propName)
 			material.propBlockSize = currentPropOffset
+			#Only written by the Onimusha WotS .51 layout, end of the last property value in floats, trailing padding excluded
+			material.propFloatCount = max((prop.propDataOffset + prop.paramCount * self.sizeData.PROPERTY_VALUE_SIZE for prop in material.propertyList),default = 0) // self.sizeData.PROPERTY_VALUE_SIZE
 			propDataBlockOffsetList.append(currentPropDataBlockOffset)
 			currentPropDataBlockOffset += material.propBlockSize
 			for texture in material.textureList:
@@ -703,7 +740,7 @@ class MDFFile():
 		print("Writing Material Entries")
 		for material in self.materialList:
 			#print(material)
-			material.write(file,version)
+			material.write(file,version,self.layout)
 		#Loop to write texture entries
 		print("Writing Texture Headers")
 		for material in self.materialList:

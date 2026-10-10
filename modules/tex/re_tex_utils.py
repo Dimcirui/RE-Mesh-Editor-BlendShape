@@ -2,7 +2,7 @@
 # Credit to Asterisk Ampersand, code borrowed from Tex Chopper
 from ..dds.file_dds import DDS, DX10_Header, DDSFile, getDDSHeader
 
-from .file_re_tex import RE_TexFile, MipData, CompressedImageHeader,GDEFLATE_VERSIONS
+from .file_re_tex import RE_TexFile, MipData, CompressedImageHeader,GDEFLATE_VERSIONS,NO_GDEFLATE_GAMES
 from ..gen_functions import raiseWarning
 from ..gdeflate.gdeflate import GDeflate, GDeflateCompressionLevel, GDeflateError
 from ..ddsconv.directx.texconv import Texconv, unload_texconv
@@ -204,21 +204,21 @@ def storeTextures(ddsHeader, texFile, miptex, compress):
     return texFile
 
 
-def getTexFileFromDDS(ddsList, texVersion, streamingFlag=False):
+def getTexFileFromDDS(ddsList, texVersion, streamingFlag=False, gameName=None):
     ddsHeader = ddsList[0].header
-    isGDeflate = texVersion in GDEFLATE_VERSIONS
+    isGDeflate = texVersion in GDEFLATE_VERSIONS and gameName not in NO_GDEFLATE_GAMES
     newTexFile = makeTexHeader(texVersion, ddsHeader, len(ddsList))
     formatData = format_ops.packetSizeData(newTexFile.tex.header.formatString)
     miptex = packageTextures(ddsHeader, ddsList, isGDeflate, formatData)
     return storeTextures(ddsHeader, newTexFile, miptex, isGDeflate)
 
 
-def DDSToTex(ddsPathList, texVersion, outPath, streamingFlag=False):
+def DDSToTex(ddsPathList, texVersion, outPath, streamingFlag=False, gameName=None):
 
     if len(ddsPathList) == 1:
         ddsFile = DDSFile()
         ddsFile.read(ddsPathList[0])
-        texFile = getTexFileFromDDS([ddsFile.dds], texVersion, streamingFlag)
+        texFile = getTexFileFromDDS([ddsFile.dds], texVersion, streamingFlag, gameName)
         texFile.write(outPath)
     else:  # Array texture
         baseHeader = getDDSHeader(ddsPathList[0])
@@ -267,7 +267,7 @@ def DDSToTex(ddsPathList, texVersion, outPath, streamingFlag=False):
                 ddsFile.read(ddsPath)
                 ddsList.append(ddsFile.dds)
 
-            texFile = getTexFileFromDDS(ddsList, texVersion, streamingFlag)
+            texFile = getTexFileFromDDS(ddsList, texVersion, streamingFlag, gameName)
             texFile.write(outPath)
 
 def ImageListToDDS(imageConvertList,outDir,generateMipMaps):

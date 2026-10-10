@@ -236,6 +236,7 @@ class MDFToolPanelPropertyGroup(bpy.types.PropertyGroup):
 				("MHWILDS", "Monster Hunter Wilds", ""),
 				("PRAG", "Pragmata", ""),
 				("MHS3", "Monster Hunter Stories 3", ""),
+				("ONIWOTS", "Onimusha: Way of the Sword", ""),
 				("RE9", "Resident Evil 9", ""),
 			  ]
 		)
