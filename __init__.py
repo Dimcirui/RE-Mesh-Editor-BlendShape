@@ -1,15 +1,23 @@
 #Author: NSA Cloud
 bl_info = {
-	"name": "RE Mesh Editor",
-	"author": "NSA Cloud, Forked by Ridog8",
-	"version": (0, 70),
+	"name": "RE-Mesh-Editor-BlendShape",
+	"author": "NSA Cloud, Forked by Ridog8, BlendShape by Dimcirui",
+	"version": (0, 70, 1),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
 	"warning": "",
-	"wiki_url": "https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes",
-	"tracker_url": "https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes/issues",
+	"wiki_url": "https://github.com/Dimcirui/RE-Mesh-Editor-BlendShape",
+	"tracker_url": "https://github.com/Dimcirui/RE-Mesh-Editor-BlendShape/issues",
 	"category": "Import-Export"}
+
+# Capabilities other addons (Modding Toolkit) detect instead of matching bl_info names.
+# Bump a version when its operator values or meaning change.
+# wilds_blendshape_export: exportfile takes shapeKeyExportMode NO / MODE1 / KEEPNORMALS,
+# KEEPNORMALS output verified in game.
+REME_FEATURES = {
+	"wilds_blendshape_export": 1,
+}
 
 import bpy
 from . import addon_updater_ops
@@ -883,8 +891,8 @@ class ImportREMesh(Operator, ImportHelper):
 		if self.mergeArmature:
 			self.clearScene = False
 		options = {"clearScene":self.clearScene,"createCollections":self.createCollections,"loadMaterials":self.loadMaterials,"loadMDFData":self.loadMDFData,"loadShellFur":self.loadShellFur,"loadUnusedTextures":self.loadUnusedTextures,"loadUnusedProps":self.loadUnusedProps,"useBackfaceCulling":self.useBackfaceCulling,"reloadCachedTextures":self.reloadCachedTextures,"mdfPath":self.mdfPath.replace("\"",""),"importAllLODs":self.importAllLODs,"importBlendShapes":self.importBlendShapes,"rotate90":self.rotate90,"mergeArmature":self.mergeArmature,"importArmatureOnly":self.importArmatureOnly,"mergeGroups":self.mergeGroups,"importShadowMeshes":self.importShadowMeshes,"importOcclusionMeshes":self.importOcclusionMeshes,"importBoundingBoxes":self.importBoundingBoxes}
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
+		editorVersion = ".".join(str(part) for part in bl_info["version"])
+		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/NSACloud/RE-Mesh-Editor")
 		
@@ -1025,12 +1033,12 @@ class ExportREMesh(Operator, ExportHelper):
 			),
 			(
 				"MODE0",
-				"Mode 0",
+				"?broken",
 				"NOT RECOMMENDED: writes normal-recalc marker 0, which vanilla meshes never use. In game it darkened faces under side/back light"
 			),
 			(
 				"MODE1",
-				"Mode 1",
+				"Recalculate Normals",
 				"Writes normal-recalc marker 1, as vanilla body/armor meshes do. The game recalculates normals from the deformed geometry, so authored custom normals are replaced by recalculated ones"
 			),
 			(
@@ -1223,10 +1231,10 @@ class ExportREMesh(Operator, ExportHelper):
 			"limitTotalCount": self.limitTotalCount,
 			"normalizeWeights": self.normalizeWeights,
 		}
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
+		editorVersion = ".".join(str(part) for part in bl_info["version"])
+		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes")
+		print("https://github.com/Dimcirui/RE-Mesh-Editor-BlendShape")
 		
 		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
 		
@@ -1282,8 +1290,8 @@ class ImportREMDF(bpy.types.Operator, ImportHelper):
 	filter_glob: StringProperty(default="*.mdf2.*", options={'HIDDEN'})
 
 	def execute(self, context):
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
+		editorVersion = ".".join(str(part) for part in bl_info["version"])
+		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/NSACloud/RE-Mesh-Editor")
 		multiFileImport = len(self.files) > 1
@@ -1393,8 +1401,8 @@ class ExportREMDF(bpy.types.Operator, ExportHelper):
 			row.label(icon="ERROR",text="Chosen collection doesn't exist.")
 			row.alert=True
 	def execute(self, context):
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
+		editorVersion = ".".join(str(part) for part in bl_info["version"])
+		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/NSACloud/RE-Mesh-Editor")
 		success = exportMDFFile(self.filepath,self.targetCollection)
@@ -1551,8 +1559,8 @@ class ImportRESFur(bpy.types.Operator, ImportHelper):
 	filter_glob: StringProperty(default="*.sfur.*", options={'HIDDEN'})
 
 	def execute(self, context):
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
+		editorVersion = ".".join(str(part) for part in bl_info["version"])
+		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/NSACloud/RE-Mesh-Editor")
 		multiFileImport = len(self.files) > 1
@@ -1651,8 +1659,8 @@ class ExportRESFur(bpy.types.Operator, ExportHelper):
 			row.label(icon="ERROR",text="Chosen collection doesn't exist.")
 			row.alert=True
 	def execute(self, context):
-		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
-		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
+		editorVersion = ".".join(str(part) for part in bl_info["version"])
+		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
 		print("https://github.com/NSACloud/RE-Mesh-Editor")
 		success = exportSFurFile(self.filepath,self.targetCollection)
