@@ -485,19 +485,33 @@ def _parseLODStructureWithBlendShapes(
 		if blendData is not None:
 			# Current blendshape parsing is enabled only for Wilds.
 			reader = ReadBlendShapeType7Buffer
-			vertexBufferIndex = 0
+			# Every submesh of one LOD lives in the same vertex buffer (VBI0 when
+			# inline, the LOD's stream entry otherwise). Vanilla target runs start
+			# inside submeshes, so take the buffer of the submesh containing the
+			# first run, falling back to the LOD's first submesh.
+			lodMeshInfos = [
+				meshInfo
+				for meshGroup in lodGroup.meshGroupList
+				for meshInfo in meshGroup.vertexInfoList
+			]
+			vertexBufferIndex = (
+				int(lodMeshInfos[0].vertexBufferIndex) if lodMeshInfos else 0
+			)
 			targets = list(getattr(blendData, "blendTargetList", []) or [])
 			if targets:
 				entries = list(
 					getattr(targets[0], "subMeshEntryList", []) or []
 				)
 				if entries:
-					targetStart = entries[0].subMeshVertexStartIndex
-					for meshGroup in lodGroup.meshGroupList:
-						for meshInfo in meshGroup.vertexInfoList:
-							if meshInfo.vertexStartIndex == targetStart:
-								vertexBufferIndex = meshInfo.vertexBufferIndex
-								break
+					targetStart = int(entries[0].subMeshVertexStartIndex)
+					containing = [
+						meshInfo for meshInfo in lodMeshInfos
+						if int(meshInfo.vertexStartIndex) <= targetStart
+					]
+					if containing:
+						vertexBufferIndex = int(max(
+							containing, key=lambda info: int(info.vertexStartIndex)
+						).vertexBufferIndex)
 			buffer = b""
 			if (
 				blendShapeBufferList is not None
@@ -509,6 +523,14 @@ def _parseLODStructureWithBlendShapes(
 				if reader is not None
 				else np.zeros((0, 3), dtype=np.float32)
 			)
+			# Wilds no-recalc meshes (normalRecalcOffset == 0) and bodies with
+			# padding1 == 1 store 8 bytes per vertex: [position delta, second row].
+			# vertOffset counts vertices, so keep only the position rows.
+			if (
+				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
+				or int(getattr(blendData, "padding1", 0) or 0) == 1
+			):
+				decoded = decoded[0::2]
 			activeCount = min(
 				int(getattr(blendData, "targetCount", 0) or 0),
 				len(targets),
@@ -567,6 +589,55 @@ def _parseLODStructureWithBlendShapes(
 				if available:
 					targetGroupMap[targetRecordIndex] = available[0]
 					claimedGroups.add(available[0])
+			# Global vertex range of every submesh in this LOD. Vanilla targets
+			# address arbitrary runs inside a submesh (e.g. 22090+231 inside a
+			# submesh starting at 21859), so each run is scattered into a
+			# full-length per-submesh array; runs of one channel are merged.
+			subRanges = []
+			for groupIndex, meshGroup in enumerate(lodGroup.meshGroupList):
+				starts = sorted({
+					int(meshInfo.vertexStartIndex)
+					for meshInfo in meshGroup.vertexInfoList
+				})
+				groupEnd = (
+					starts[0] + int(meshGroup.vertexCount) if starts else 0
+				)
+				for startIndex, start in enumerate(starts):
+					end = (
+						starts[startIndex + 1]
+						if startIndex + 1 < len(starts)
+						else groupEnd
+					)
+					subRanges.append((groupIndex, start, end))
+			shapeAccum = {}
+			def scatterDeltas(groupHint, shapeName, vertexStart, deltas):
+				done = 0
+				total = len(deltas)
+				while done < total:
+					vertex = vertexStart + done
+					owners = [
+						subRange for subRange in subRanges
+						if subRange[1] <= vertex < subRange[2]
+					]
+					if not owners:
+						print(
+							f"Blend shape {shapeName}: vertex {vertex} is outside "
+							f"every LOD{lodIndex} submesh, {total - done} rows skipped"
+						)
+						return
+					groupIndex, start, end = next(
+						(subRange for subRange in owners if subRange[0] == groupHint),
+						owners[0],
+					)
+					take = min(total - done, end - vertex)
+					channels = shapeAccum.setdefault((groupIndex, start), {})
+					full = channels.get(shapeName)
+					if full is None:
+						full = np.zeros((end - start, 3), dtype=np.float32)
+						channels[shapeName] = full
+					full[vertex - start:vertex - start + take] = deltas[done:done + take]
+					done += take
+
 			payloadCursor = 0
 			for targetIndex, target in enumerate(targets[:activeCount]):
 				entries = list(
@@ -647,29 +718,33 @@ def _parseLODStructureWithBlendShapes(
 								blendData.typing,
 								useSymmetricScale,
 							)
-							shape = BlendShape()
-							shape.blendShapeName = shapeName
-							shape.deltas = deltas
-							blendShapeDict.setdefault((
+							scatterDeltas(
 								targetGroupIndex,
+								shapeName,
 								int(entry.subMeshVertexStartIndex),
-							), []).append(shape)
+								deltas,
+							)
 							running += count
 					else:
 						start = payloadCursor + channelIndex * targetRowCount
-						shape = BlendShape()
-						shape.blendShapeName = shapeName
-						shape.deltas = ApplyBlendShapeAABBToDecodedRows(
-							decoded[start:start + targetRowCount].copy(),
-							blendData.aabbList[targetIndex],
-							blendData.typing,
-							useSymmetricScale,
-						)
-						blendShapeDict.setdefault((
+						scatterDeltas(
 							targetGroupIndex,
+							shapeName,
 							int(target.subMeshVertexStartIndex),
-						), []).append(shape)
+							ApplyBlendShapeAABBToDecodedRows(
+								decoded[start:start + targetRowCount].copy(),
+								blendData.aabbList[targetIndex],
+								blendData.typing,
+								useSymmetricScale,
+							),
+						)
 				payloadCursor += targetRowCount * channelCount
+			for key, channels in shapeAccum.items():
+				for shapeName, full in channels.items():
+					shape = BlendShape()
+					shape.blendShapeName = shapeName
+					shape.deltas = full
+					blendShapeDict.setdefault(key, []).append(shape)
 
 		lod = LODLevel()
 		lod.lodDistance = lodGroup.distance

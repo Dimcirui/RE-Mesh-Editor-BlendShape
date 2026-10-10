@@ -20,21 +20,44 @@ NORMAL_PIVOT_ATTRIBUTE = "MHWILDS_NormalPivot"
 NORMAL_PIVOT0_ATTRIBUTE = "MHWILDS_NormalPivot0"
 NORMAL_PIVOT255_ATTRIBUTE = "MHWILDS_NormalPivot255"
 
-MHWILDS_BLENDSHAPE_MODE_DEFAULT = 0
-MHWILDS_BLENDSHAPE_MODES = (0, 1)
+# Vanilla markers are 1 or 3; 0 is never shipped (darkens faces in game).
+# KEEP_NORMALS is vanilla's no-recalc layout (Seikret ch07_000_*, ch90_158, ch91_154):
+# normalRecalcOffset = 0 with no marker slot, no canonical tables, and 8-byte payload
+# rows per vertex [position delta, second row]. The game then keeps authored normals.
+MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS = -1
+MHWILDS_BLENDSHAPE_MODE_DEFAULT = MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS
+MHWILDS_BLENDSHAPE_MODES = (0, 1, MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS)
 MHWILDS_BLENDSHAPE_MODE_ATTRIBUTE = "_mhwildsBlendShapeMode"
+# Zero code of the packed 11/10/11 position rows.
+ZERO_DELTA_ROW = 0x7FEFFBFF
+# Each target lists the vertex runs it stores (16-byte BlendSubMesh entries,
+# count is a ubyte). Targets are built per disjoint vertex region so a shape
+# stores only its region; vanilla splits targets this way (ch02_002_0002).
+TARGET_ENTRY_BYTES = 16
+MAX_TARGET_ENTRIES = 255
+# Active targets per LOD body; the closest regions are merged to fit. Vanilla
+# never ships more than 27. In game (Shinano ch03_032_5012, 2026-10-09) 190
+# targets crashed on equip rebuild, 27 and 64 did not. None = no cap.
+# Overridable via _mhwildsMaxActiveTargets on the parsed mesh.
+MAX_ACTIVE_TARGETS_PER_BODY = 64
 
 
 def set_export_mode(parsed_mesh, mode):
 	mode = int(mode)
 	if mode not in MHWILDS_BLENDSHAPE_MODES:
-		raise ValueError(f"MHWILDS blendshape mode must be 0 or 1, got {mode}")
+		raise ValueError(
+			f"MHWILDS blendshape mode must be one of {MHWILDS_BLENDSHAPE_MODES}, got {mode}"
+		)
 	setattr(parsed_mesh, MHWILDS_BLENDSHAPE_MODE_ATTRIBUTE, mode)
 	return mode
 
 
+def _keeps_normals(parsed_mesh=None, re_mesh=None):
+	return _export_mode(parsed_mesh, re_mesh) == MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS
+
+
 def _export_mode(parsed_mesh=None, re_mesh=None):
-	"""Resolve the per-export mode, defaulting to Wilds mode 0."""
+	"""Resolve the per-export mode, defaulting to keep-normals."""
 	for owner in (re_mesh, parsed_mesh):
 		if owner is None:
 			continue
@@ -52,8 +75,16 @@ def _align16(value):
 	return mesh_format.getPaddedPos(int(value), 16)
 
 
-def reserve_normal_recalc_marker(re_mesh, current_offset):
-	"""Reserve vanilla's 16-byte normal marker directly before blendShapesOffset."""
+def reserve_normal_recalc_marker(re_mesh, current_offset, parsed_mesh=None):
+	"""Reserve vanilla's 16-byte normal marker directly before blendShapesOffset.
+
+	The keep-normals layout has no marker: normalRecalcOffset stays 0 and the
+	blend-shape header follows the previous section directly, as in vanilla.
+	"""
+	if _keeps_normals(parsed_mesh=parsed_mesh):
+		re_mesh.fileHeader.normalRecalcOffset = 0
+		re_mesh._mhwildsNormalMarkerOffset = 0
+		return _align16(current_offset)
 	marker_offset = _align16(current_offset)
 	re_mesh.fileHeader.normalRecalcOffset = marker_offset
 	re_mesh._mhwildsNormalMarkerOffset = marker_offset
@@ -104,6 +135,33 @@ def _normalized_deltas(parsed_submesh, shape_name, vertex_count):
 	elif len(deltas) > vertex_count:
 		deltas = deltas[:vertex_count]
 	return deltas
+
+
+def _base_normals(parsed_submesh, vertex_count):
+	normals = np.asarray(
+		_list_or_empty(getattr(parsed_submesh, "normalList", None)), dtype=np.float32
+	).reshape((-1, 3))
+	if len(normals) != vertex_count:
+		raise RuntimeError("keep-normals export needs one normal per exported vertex")
+	return normals
+
+
+def _shape_normals(parsed_submesh, shape_name, base):
+	"""Row normals after the shape is applied; the base normal where unknown."""
+	entry = _shape_entry(parsed_submesh, shape_name)
+	normals = None if entry is None else getattr(entry, "normals", None)
+	if normals is None:
+		return base
+	normals = np.asarray(normals, dtype=np.float32).reshape((-1, 3))
+	return normals if len(normals) == len(base) else base
+
+
+def _pack_normal_rows(normals):
+	"""int8 xyz words like the Normal element (floor(n * 127)), top byte 0."""
+	normals = np.asarray(normals, dtype=np.float32).reshape((-1, 3))
+	words = np.zeros((len(normals), 4), dtype=np.int8)
+	words[:, :3] = np.clip(np.floor(normals * 127.0), -127, 127).astype(np.int8)
+	return words.reshape(-1).view("<u4")
 
 
 def _symmetric_aabb(delta_arrays):
@@ -230,6 +288,306 @@ def _exported_groups(lod, parsed_to_mesh_info):
 	return groups
 
 
+def _viscon_submeshes(lod, parsed_to_mesh_info):
+	"""Exported (parsed, mesh_info, vertex_count) lists, one per viscon group."""
+	result = []
+	for viscon in _list_or_empty(getattr(lod, "visconGroupList", None)):
+		submeshes = []
+		for parsed_submesh in _list_or_empty(getattr(viscon, "subMeshList", None)):
+			mesh_info = parsed_to_mesh_info.get(parsed_submesh)
+			vertex_positions = getattr(parsed_submesh, "vertexPosList", None)
+			vertex_count = 0 if vertex_positions is None else len(vertex_positions)
+			if mesh_info is not None and vertex_count:
+				submeshes.append((parsed_submesh, mesh_info, int(vertex_count)))
+		if submeshes:
+			result.append(submeshes)
+	return result
+
+
+def _group_channels(submeshes, with_normals=False):
+	"""Per-channel deltas and moving-vertex masks over one viscon group.
+
+	Arrays index the group's global vertex range [lo, hi); `valid` marks the
+	rows that belong to its submeshes. Channels that move nothing here are
+	left out, so they get no target in this group. With normals, each channel
+	also carries its packed second rows, and rows whose packed normal changes
+	(neighbours of moving vertices) count as moving too.
+	"""
+	lo = min(int(info.vertexStartIndex) for _parsed, info, _count in submeshes)
+	hi = max(
+		int(info.vertexStartIndex) + count for _parsed, info, count in submeshes
+	)
+	valid = np.zeros(hi - lo, dtype=bool)
+	base = np.zeros((hi - lo, 3), dtype=np.float32)
+	for parsed_submesh, info, count in submeshes:
+		start = int(info.vertexStartIndex) - lo
+		valid[start:start + count] = True
+		if with_normals:
+			base[start:start + count] = _base_normals(parsed_submesh, count)
+	base_rows = _pack_normal_rows(base) if with_normals else None
+	channels = []
+	for name in _shape_names(submeshes):
+		deltas = np.zeros((hi - lo, 3), dtype=np.float32)
+		for parsed_submesh, info, count in submeshes:
+			start = int(info.vertexStartIndex) - lo
+			deltas[start:start + count] = _normalized_deltas(
+				parsed_submesh, name, count
+			)
+		mask = np.any(np.abs(deltas) > EDIT_DELTA_THRESHOLD, axis=1)
+		if not mask.any():
+			continue
+		rows = None
+		if with_normals:
+			normals = base.copy()
+			for parsed_submesh, info, count in submeshes:
+				start = int(info.vertexStartIndex) - lo
+				normals[start:start + count] = _shape_normals(
+					parsed_submesh, name, base[start:start + count]
+				)
+			rows = _pack_normal_rows(normals)
+			mask |= valid & (rows != base_rows)
+		channels.append((name, deltas, mask, rows))
+	return lo, valid, channels
+
+
+def _mask_runs(mask):
+	"""Half-open (start, end) runs of True values."""
+	indices = np.flatnonzero(mask)
+	if not len(indices):
+		return []
+	breaks = np.flatnonzero(np.diff(indices) > 1)
+	starts = np.r_[indices[0], indices[breaks + 1]]
+	ends = np.r_[indices[breaks], indices[-1]] + 1
+	return list(zip(starts.tolist(), ends.tolist()))
+
+
+def _target_runs(mask, valid, channel_count, row_bytes):
+	"""Runs of one target, bridging gaps that cost less than an entry.
+
+	A bridged gap stores zero rows for every channel of the target, an extra
+	entry costs 16 bytes. Gaps over rows outside the group are never bridged.
+	"""
+	runs = []
+	for start, end in _mask_runs(mask):
+		if (
+			runs
+			and (start - runs[-1][1]) * channel_count * row_bytes <= TARGET_ENTRY_BYTES
+			and valid[runs[-1][1]:start].all()
+		):
+			runs[-1][1] = end
+		else:
+			runs.append([start, end])
+	while len(runs) > MAX_TARGET_ENTRIES:
+		gaps = [
+			(runs[index + 1][0] - runs[index][1], index)
+			for index in range(len(runs) - 1)
+			if valid[runs[index][1]:runs[index + 1][0]].all()
+		]
+		if not gaps:
+			raise RuntimeError(
+				"Wilds blend target needs more than "
+				f"{MAX_TARGET_ENTRIES} vertex runs"
+			)
+		_gap, index = min(gaps)
+		runs[index][1] = runs[index + 1][1]
+		del runs[index + 1]
+	return [(int(start), int(end)) for start, end in runs]
+
+
+def _run_entries(runs, lo):
+	entries = []
+	for start, end in runs:
+		entry = mesh_format.BlendSubMesh()
+		entry.subMeshVertexStartIndex = lo + int(start)
+		entry.vertOffset = 0
+		entry.vertCount = int(end - start)
+		entry.paramUnkn3 = 0
+		entries.append(entry)
+	return entries
+
+
+def _split_target_cap(channel_counts, max_targets):
+	"""Share a body-wide target cap between viscon groups by channel count.
+
+	Every group with channels gets at least one target; None means no cap.
+	"""
+	if not max_targets:
+		return [None] * len(channel_counts)
+	max_targets = int(max_targets)
+	active = [index for index, count in enumerate(channel_counts) if count]
+	if len(active) > max_targets:
+		raise RuntimeError(
+			f"{len(active)} viscon groups have shape keys, more than the "
+			f"{max_targets} Wilds blend target cap"
+		)
+	caps = [0] * len(channel_counts)
+	if sum(channel_counts) <= max_targets:
+		return list(channel_counts)
+	for index in active:
+		caps[index] = 1
+	spare = max_targets - len(active)
+	total = sum(channel_counts[index] for index in active)
+	# Largest-remainder split of the spare targets, capped at each group's size.
+	shares = sorted(
+		(
+			(spare * channel_counts[index] / total, index)
+			for index in active
+		),
+		key=lambda item: item[0] - int(item[0]),
+		reverse=True,
+	)
+	for share, index in shares:
+		caps[index] += min(int(share), channel_counts[index] - 1)
+	leftover = max_targets - sum(caps)
+	for _share, index in shares:
+		if leftover <= 0:
+			break
+		if caps[index] < channel_counts[index]:
+			caps[index] += 1
+			leftover -= 1
+	return caps
+
+
+def _region_targets(masks, valid, max_targets, row_bytes):
+	"""Group channels into targets whose vertex runs never partially overlap.
+
+	Vanilla active targets either share an identical run set or are disjoint
+	(210/210 files). In game, partially overlapping targets race on the shared
+	vertices (spikes, shapes that move only part of a region). So channels
+	that move a common vertex go into the same target, and run gaps are only
+	bridged over vertices no other target uses. Returns [(channel indices,
+	runs)], runs as half-open (start, end) offsets into the group.
+	"""
+	count = len(masks)
+	if not count:
+		return []
+	parent = list(range(count))
+
+	def find(index):
+		while parent[index] != index:
+			parent[index] = parent[parent[index]]
+			index = parent[index]
+		return index
+
+	def union(left, right):
+		left, right = find(left), find(right)
+		if left != right:
+			parent[max(left, right)] = min(left, right)
+
+	owner = np.full(len(valid), -1, dtype=np.int64)
+	for index, mask in enumerate(masks):
+		for other in np.unique(owner[mask]):
+			if other >= 0:
+				union(index, int(other))
+		owner[mask] = index
+
+	while True:
+		groups = {}
+		for index in range(count):
+			groups.setdefault(find(index), []).append(index)
+		clusters = sorted(groups.values(), key=lambda cluster: cluster[0])
+		region = []
+		for cluster in clusters:
+			mask = np.zeros(len(valid), dtype=bool)
+			for index in cluster:
+				mask |= masks[index]
+			region.append(mask)
+		if max_targets and len(clusters) > int(max_targets):
+			# Merge the two regions whose union adds the fewest stored rows.
+			best = None
+			for left in range(len(clusters)):
+				for right in range(left + 1, len(clusters)):
+					a, b = region[left], region[right]
+					extra = (
+						len(clusters[left]) * int(b.sum())
+						+ len(clusters[right]) * int(a.sum())
+					)
+					if best is None or extra < best[0]:
+						best = (extra, left, right)
+			union(clusters[best[1]][0], clusters[best[2]][0])
+			continue
+		taken = np.zeros(len(valid), dtype=bool)
+		for mask in region:
+			taken |= mask
+		result = []
+		retry = False
+		for cluster, mask in zip(clusters, region):
+			# Rows no region moves can be bridged once; claim them as we go.
+			free = valid & (mask | ~taken)
+			try:
+				runs = _target_runs(mask, free, len(cluster), row_bytes)
+			except RuntimeError:
+				# Too many runs: absorb the region sitting in the smallest gap.
+				own = _mask_runs(mask)
+				gap = min(
+					range(len(own) - 1),
+					key=lambda i: own[i + 1][0] - own[i][1],
+				)
+				blocker = owner[own[gap][1]:own[gap + 1][0]]
+				blocker = blocker[blocker >= 0]
+				if not len(blocker):
+					raise
+				union(cluster[0], int(np.bincount(blocker).argmax()))
+				retry = True
+				break
+			for start, end in runs:
+				taken[start:end] = True
+			result.append((cluster, runs))
+		if retry:
+			continue
+		# Bridged gaps must stay inside this region's own free rows.
+		used = np.zeros(len(valid), dtype=bool)
+		for _cluster, runs in result:
+			for start, end in runs:
+				if used[start:end].any():
+					raise RuntimeError("Wilds blend target runs overlap")
+				used[start:end] = True
+		return result
+
+
+def _drop_empty_shapes(lods):
+	"""Remove shape channels that move no vertex on any submesh of any LOD.
+
+	Empty channels would still take a name/index slot in the mesh. Only names
+	that are empty everywhere are removed, so submeshes sharing a channel keep
+	identical name sets and stay in one target.
+	"""
+	entries_by_name = {}
+	moving_names = set()
+	for lod in lods:
+		for viscon in _list_or_empty(getattr(lod, "visconGroupList", None)):
+			for parsed_submesh in _list_or_empty(
+				getattr(viscon, "subMeshList", None)
+			):
+				for entry in _list_or_empty(
+					getattr(parsed_submesh, "blendShapeList", None)
+				):
+					name = str(getattr(entry, "blendShapeName", "") or "")
+					entries_by_name.setdefault(name, []).append(
+						(parsed_submesh, entry)
+					)
+					deltas = np.asarray(
+						getattr(entry, "deltas", []), dtype=np.float32
+					)
+					if (
+						deltas.size
+						and float(np.max(np.abs(deltas))) > EDIT_DELTA_THRESHOLD
+					):
+						moving_names.add(name)
+	empty_names = [
+		name for name in entries_by_name if name not in moving_names
+	]
+	for name in empty_names:
+		for parsed_submesh, entry in entries_by_name[name]:
+			parsed_submesh.blendShapeList.remove(entry)
+	if empty_names:
+		print(
+			"Skipped shape keys without vertex displacement during blendshape export: "
+			+ ", ".join(empty_names)
+		)
+	return empty_names
+
+
 def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 	"""Build active and inactive Wilds targets from Blender viscon groups."""
 	lods = _list_or_empty(
@@ -237,11 +595,18 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 	)
 	if not lods:
 		return None
+	_drop_empty_shapes(lods)
+	keep_normals = _keeps_normals(parsed_mesh=parsed_mesh)
+	row_bytes = 8 if keep_normals else 4
+	max_targets = getattr(
+		parsed_mesh, "_mhwildsMaxActiveTargets", MAX_ACTIVE_TARGETS_PER_BODY
+	)
 	header = mesh_format.BlendShapeHeader()
 	header.zero = 0
 	header.hash = 0
 	remap_names = []
 	payloads = []
+	second_rows = []
 	remap_base = 0
 	found_blend_lod = False
 	aliases = _resolve_alias_map(
@@ -258,9 +623,6 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 				break
 			continue
 		active_groups = [group for group in groups if group["shapeNames"]]
-		inactive_groups = [
-			group for group in groups if not group["shapeNames"]
-		]
 		if not active_groups:
 			if any(
 				any(group["shapeNames"] for group in _exported_groups(
@@ -273,13 +635,6 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 				)
 			break
 		found_blend_lod = True
-		all_submeshes = [
-			entry for group in groups for entry in group["submeshes"]
-		]
-		lod_vertex_base = min(
-			int(mesh_info.vertexStartIndex)
-			for _parsed, mesh_info, _count in all_submeshes
-		)
 		alias_owner = aliases.get(lod_index)
 		if alias_owner is None:
 			body_remap_base = remap_base
@@ -301,95 +656,93 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		active_targets = []
 		inactive_targets = []
 		body_payload = bytearray()
+		body_second_rows = []
 		body_channel_count = 0
+		body_shape_names = []
 
-		for group in active_groups:
-			shape_names = list(group["shapeNames"])
-			target = mesh_format.BlendTarget()
-			target.blendSSIndex = body_remap_base + body_channel_count
-			target.blendShapeNum = len(shape_names)
-			target.unkn0 = 0
-			target.unkn2 = 1
-			target.subMeshEntryList = []
-			for _parsed, mesh_info, vertex_count in group["submeshes"]:
-				entry = mesh_format.BlendSubMesh()
+		grouped = [
+			_group_channels(submeshes, with_normals=keep_normals)
+			for submeshes in _viscon_submeshes(lod, parsed_to_mesh_info)
+		]
+		group_caps = _split_target_cap(
+			[len(channels) for _lo, _valid, channels in grouped], max_targets
+		)
+		for (lo, valid, channels), group_cap in zip(grouped, group_caps):
+			covered = np.zeros(len(valid), dtype=bool)
+			for cluster, runs in _region_targets(
+				[channel[2] for channel in channels],
+				valid,
+				group_cap,
+				row_bytes,
+			):
+				target = mesh_format.BlendTarget()
+				target.blendSSIndex = body_remap_base + body_channel_count
+				target.blendShapeNum = len(cluster)
+				# Vanilla: index of the first target with the same run set.
+				run_key = tuple(runs)
+				target.unkn0 = next(
+					(
+						index for index, other in enumerate(active_targets)
+						if getattr(other, "_mhwildsRunKey", None) == run_key
+					),
+					len(active_targets),
+				)
+				target._mhwildsRunKey = run_key
+				target.unkn2 = 1
 				# VBI0 is one global vertex namespace. Blend targets must use
 				# the same global starts as the MaterialSubdivision records.
-				entry.subMeshVertexStartIndex = int(mesh_info.vertexStartIndex)
-				entry.vertOffset = 0
-				entry.vertCount = int(vertex_count)
-				entry.paramUnkn3 = 0
-				target.subMeshEntryList.append(entry)
-			target.subMeshEntryCount = len(target.subMeshEntryList)
+				target.subMeshEntryList = _run_entries(runs, lo)
+				target.subMeshEntryCount = len(target.subMeshEntryList)
+				for start, end in runs:
+					covered[start:end] = True
 
-			channel_deltas = []
-			aabb_sources = []
-			for shape_name in shape_names:
-				per_submesh = []
-				for parsed_submesh, _mesh_info, vertex_count in group[
-					"submeshes"
-				]:
-					deltas = _normalized_deltas(
-						parsed_submesh, shape_name, vertex_count
+				aabb = _symmetric_aabb([
+					channels[channel_index][1][channels[channel_index][2]]
+					for channel_index in cluster
+				])
+				body.aabbList.append(aabb)
+				for channel_index in cluster:
+					deltas = channels[channel_index][1]
+					rows = channels[channel_index][3]
+					for start, end in runs:
+						body_payload.extend(
+							_pack_delta_rows(deltas[start:end], aabb)
+						)
+						if rows is not None:
+							body_second_rows.append(rows[start:end])
+
+				names = [channels[channel_index][0] for channel_index in cluster]
+				active_targets.append(target)
+				body_shape_names.extend(names)
+				if alias_owner is None:
+					remap_names.extend(names)
+				body.blendSSList.extend(
+					range(
+						body_channel_count,
+						body_channel_count + len(cluster),
 					)
-					per_submesh.append(deltas)
-					if (
-						deltas.size
-						and float(np.max(np.abs(deltas)))
-						> EDIT_DELTA_THRESHOLD
-					):
-						aabb_sources.append(deltas)
-				channel_deltas.append(per_submesh)
-			aabb = _symmetric_aabb(aabb_sources)
-			body.aabbList.append(aabb)
-			for per_submesh in channel_deltas:
-				for deltas in per_submesh:
-					body_payload.extend(_pack_delta_rows(deltas, aabb))
-
-			active_targets.append(target)
-			if alias_owner is None:
-				remap_names.extend(shape_names)
-			body.blendSSList.extend(
-				range(
-					body_channel_count,
-					body_channel_count + len(shape_names),
 				)
-			)
-			body_channel_count += len(shape_names)
+				body_channel_count += len(cluster)
 
-		for group in inactive_groups:
-			target = mesh_format.BlendTarget()
-			target.blendSSIndex = 0
-			target.blendShapeNum = 0
-			target.unkn0 = 0
-			target.unkn2 = 0
-			target.subMeshEntryList = []
-			for _parsed, mesh_info, vertex_count in group["submeshes"]:
-				entry = mesh_format.BlendSubMesh()
-				entry.subMeshVertexStartIndex = int(mesh_info.vertexStartIndex)
-				entry.vertOffset = 0
-				entry.vertCount = int(vertex_count)
-				entry.paramUnkn3 = 0
-				if (
-					target.subMeshEntryList
-					and target.subMeshEntryList[-1].subMeshVertexStartIndex
-					+ target.subMeshEntryList[-1].vertCount
-					== entry.subMeshVertexStartIndex
-				):
-					target.subMeshEntryList[-1].vertCount += entry.vertCount
-				else:
-					target.subMeshEntryList.append(entry)
-			target.subMeshEntryCount = len(target.subMeshEntryList)
-			inactive_targets.append(target)
+			# Vanilla covers every remaining vertex of the viscon group with
+			# inactive targets, disjoint from the active runs.
+			rest = _mask_runs(valid & ~covered)
+			for chunk_start in range(0, len(rest), MAX_TARGET_ENTRIES):
+				target = mesh_format.BlendTarget()
+				target.blendSSIndex = 0
+				target.blendShapeNum = 0
+				target.unkn0 = 0
+				target.unkn2 = 0
+				target.subMeshEntryList = _run_entries(
+					rest[chunk_start:chunk_start + MAX_TARGET_ENTRIES], lo
+				)
+				target.subMeshEntryCount = len(target.subMeshEntryList)
+				inactive_targets.append(target)
 
 		body.targetCount = len(active_targets)
 		body.typing = len(inactive_targets)
 		body.blendTargetList = active_targets + inactive_targets
-		body_shape_names = tuple(
-			name
-			for group in active_groups
-			for name in group["shapeNames"]
-		)
+		body_shape_names = tuple(body_shape_names)
 		if alias_owner is not None:
 			owner_shape_names = body_shape_name_sets[alias_owner]
 			if body_shape_names != owner_shape_names:
@@ -419,6 +772,10 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		padding = mesh_format.getPaddingAmount(len(body_payload), 16)
 		body_payload.extend(b"\x00" * padding)
 		payloads.append(bytes(body_payload))
+		second_rows.append(
+			np.concatenate(body_second_rows) if body_second_rows
+			else np.zeros(0, dtype="<u4")
+		)
 		if alias_owner is None:
 			remap_base += body_channel_count
 
@@ -471,6 +828,8 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		"header": header,
 		"shapeRemapNames": remap_names,
 		"payloads": payloads,
+		# Keep-normals only: per body, the packed second row of every payload row.
+		"secondRows": second_rows if keep_normals else None,
 		"aliases": blend_aliases,
 		"bodyRemapBases": tuple(body_remap_bases),
 		"sourceVertexIndices": tuple(source_vertex_indices),
@@ -1024,8 +1383,34 @@ def _global_resource_range(re_mesh):
 	}
 
 
-def _assign_unified_payload_offsets(bodies, payloads, aliases):
-	"""Assign global row offsets while omitting aliased duplicate payloads."""
+def _interleave_second_rows(payload, row_count, second_rows):
+	"""[pos0, pos1, ...] -> [pos0, second0, pos1, second1, ...], 16-byte padded.
+
+	Keep-normals payloads carry a second 32-bit row per vertex: the vertex normal
+	after the shape is applied, int8 xyz like the Normal element (vanilla
+	ch07_000/ch90_158/ch91_154: equals the base normal wherever the position
+	does not move). build_blend_shape_plan packs them per channel and run.
+	"""
+	if len(second_rows) != row_count:
+		raise RuntimeError("keep-normals second rows do not match the payload rows")
+	rows = np.frombuffer(payload[:row_count * 4], dtype="<u4")
+	pairs = np.empty(row_count * 2, dtype="<u4")
+	pairs[0::2] = rows
+	pairs[1::2] = second_rows
+	data = bytearray(pairs.tobytes())
+	data.extend(b"\x00" * mesh_format.getPaddingAmount(len(data), 16))
+	return bytes(data)
+
+
+def _assign_unified_payload_offsets(
+	bodies, payloads, aliases, interleaved=False, second_rows=None
+):
+	"""Assign global row offsets while omitting aliased duplicate payloads.
+
+	vertOffset counts vertices. Interleaved (keep-normals) rows are 8 bytes, so
+	the physical row of vertex i is 2 * (vertOffset + channel * rows + i).
+	"""
+	row_bytes = 8 if interleaved else 4
 	owners = []
 	for body_index in range(len(bodies)):
 		owner = int(aliases.get(body_index, body_index))
@@ -1039,7 +1424,7 @@ def _assign_unified_payload_offsets(bodies, payloads, aliases):
 		owner = owners[body_index]
 		if owner != body_index:
 			continue
-		body_row_base = len(payload_blob) // 4
+		body_row_base = len(payload_blob) // row_bytes
 		owner_base_rows[body_index] = body_row_base
 		target_row_base = body_row_base
 		for target in body.blendTargetList[:int(body.targetCount)]:
@@ -1050,10 +1435,14 @@ def _assign_unified_payload_offsets(bodies, payloads, aliases):
 				entry.vertOffset = target_row_base + entry_prefix
 				entry_prefix += int(entry.vertCount)
 			target_row_base += int(target.blendShapeNum) * target_rows
-		useful_bytes = (target_row_base - body_row_base) * 4
-		if useful_bytes > len(payload):
+		useful_rows = target_row_base - body_row_base
+		if useful_rows * 4 > len(payload):
 			raise RuntimeError(
 				"Wilds body payload is smaller than its authored target rows"
+			)
+		if interleaved:
+			payload = _interleave_second_rows(
+				payload, useful_rows, second_rows[body_index]
 			)
 		payload_blob.extend(payload)
 
@@ -1126,8 +1515,13 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 
 	# Every target uses the same global VBI0 vertex namespace as its visible
 	# MaterialSubdivision. vertOffset selects the body's packed delta rows.
+	keep_normals = mode == MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS
 	payload_blob = _assign_unified_payload_offsets(
-		bodies, payloads, aliases
+		bodies,
+		payloads,
+		aliases,
+		interleaved=keep_normals,
+		second_rows=plan.get("secondRows"),
 	)
 
 	mesh_header = re_mesh.meshBufferHeader
@@ -1136,7 +1530,8 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	profile = _list_or_empty(
 		getattr(parsed_mesh, "mhwildsCanonicalTableProfile", None)
 	)
-	use_tables = any(
+	# Vanilla keep-normals meshes carry no canonical tables in any LOD.
+	use_tables = (not keep_normals) and any(
 		bool(profile[index]) if index < len(profile) else True
 		for index in range(len(bodies))
 	)
@@ -1189,7 +1584,11 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	# Wilds stores the first canonical boundary in the two adjacent signed
 	# 16-bit fields at MeshBufferHeader + 44. Together they form one 32-bit
 	# value. The following qword stores boundaries two and three.
-	canonical_boundary0 = int(canonical_start)
+	# Without tables vanilla writes table start = table end = 0 and the payload
+	# start right after the vertex elements.
+	canonical_boundary0 = 0 if keep_normals else int(canonical_start)
+	if keep_normals:
+		face_table_end = 0
 	mesh_header.vertexElementSize = _signed_short(
 		canonical_boundary0 & 0xFFFF
 	)
@@ -1216,17 +1615,26 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	normal_plan = _normal_contract(parsed_mesh)
 	mesh_offset = int(re_mesh.fileHeader.meshOffset)
 	if normal_plan is not None:
-		descriptor_offset = mesh_offset + 80
-		mesh_header.vertexElementOffset = _align16(descriptor_offset + 16)
+		# Vanilla single-buffer layout: the FloatData descriptor IS the last 16 bytes
+		# of the 80-byte MeshBufferHeader (+64: size, +72: offset of the pivot table),
+		# the zero StreamingInfo follows at +80 and the vertex elements at +96. The
+		# old writer swapped descriptor and StreamingInfo, so the header slots read 0.
+		descriptor_offset = mesh_offset + 64
+		stream_info_offset = mesh_offset + 80
+		mesh_header.vertexElementOffset = _align16(stream_info_offset + 16)
 		re_mesh._mhwildsFloatDescriptorOffset = descriptor_offset
 	else:
+		stream_info_offset = mesh_offset + 64
 		mesh_header.vertexElementOffset = _align16(mesh_offset + 80)
 		re_mesh._mhwildsFloatDescriptorOffset = 0
 
 	marker_offset = int(
 		getattr(re_mesh, "_mhwildsNormalMarkerOffset", 0)
 	)
-	if normal_plan is not None:
+	if keep_normals:
+		if marker_offset:
+			raise RuntimeError("keep-normals export reserved a normal marker slot")
+	elif normal_plan is not None:
 		if marker_offset <= 0:
 			raise RuntimeError("did not reserve a normal marker slot")
 		if marker_offset + 16 != int(re_mesh.fileHeader.blendShapesOffset):
@@ -1246,9 +1654,8 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	)
 
 	re_mesh.fileHeader.verticesOffset = mesh_header.vertexBufferOffset
-	# A zero-entry StreamingInfo view is represented by the zero fields already
-	# present at meshOffset+64, matching the original unified exporter.
-	re_mesh.fileHeader.streamingInfoOffset = mesh_offset + 64
+	# A zero-entry StreamingInfo view: 16 zero bytes, never written over.
+	re_mesh.fileHeader.streamingInfoOffset = stream_info_offset
 	re_mesh.fileHeader.normalRecalcOffset = marker_offset
 	re_mesh.fileHeader.floatsOffset = int(
 		getattr(re_mesh, "_mhwildsFloatDescriptorOffset", 0)
@@ -1369,19 +1776,23 @@ def _apply_normal_contract(data, re_mesh):
 	marker_offset = int(
 		getattr(re_mesh, "_mhwildsNormalMarkerOffset", 0)
 	)
+	keep_normals = mode == MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS
 	if descriptor_offset <= 0:
 		raise RuntimeError("did not reserve a FloatData descriptor")
-	if marker_offset <= 0:
-		raise RuntimeError("did not reserve a normal marker")
-	if marker_offset + 16 != int(re_mesh.fileHeader.blendShapesOffset):
-		raise RuntimeError(
-			"blendshape adjacency changed before serialization"
-		)
-
-	# The reserved slot must be unused metadata padding before we populate it.
-	if any(data[marker_offset:marker_offset + 16]):
-		raise RuntimeError("slot was overwritten by another structure")
-	struct.pack_into("<IIII", data, marker_offset, mode, 0, 0, 0)
+	if keep_normals:
+		if marker_offset:
+			raise RuntimeError("keep-normals export must not have a normal marker")
+	else:
+		if marker_offset <= 0:
+			raise RuntimeError("did not reserve a normal marker")
+		if marker_offset + 16 != int(re_mesh.fileHeader.blendShapesOffset):
+			raise RuntimeError(
+				"blendshape adjacency changed before serialization"
+			)
+		# The reserved slot must be unused metadata padding before we populate it.
+		if any(data[marker_offset:marker_offset + 16]):
+			raise RuntimeError("slot was overwritten by another structure")
+		struct.pack_into("<IIII", data, marker_offset, mode, 0, 0, 0)
 
 	pivot_offset = len(data)
 	data.extend(pivot_bytes)
@@ -1491,22 +1902,46 @@ def write_mhwilds_mesh(re_mesh, filepath):
 
 	if not (written_content_flag & 0x0008):
 		raise RuntimeError("FloatData content-flag bit was not set")
-	if written_normal_offset != marker_offset or marker_offset <= 0:
-		raise RuntimeError(
-			"normal marker offset mismatch: "
-			f"0x{written_normal_offset:X}/0x{marker_offset:X}"
+	if mode == MHWILDS_BLENDSHAPE_MODE_KEEP_NORMALS:
+		if written_normal_offset != 0 or marker_offset:
+			raise RuntimeError(
+				"keep-normals export wrote a normal marker: "
+				f"0x{written_normal_offset:X}"
+			)
+		if written_boundary0 or written_face_table_end:
+			raise RuntimeError("keep-normals export wrote canonical tables")
+		vertex_count = int(_global_resource_range(re_mesh)["vertexCount"])
+		elements_end = max(
+			int(element.posStartOffset) + int(element.stride) * vertex_count
+			for element in re_mesh.meshBufferHeader.vertexElementList
 		)
-	if written_blend_offset != marker_offset + 16:
+		if written_payload_start != _align16(elements_end):
+			raise RuntimeError(
+				"keep-normals payload does not start after the vertex elements: "
+				f"0x{written_payload_start:X}"
+			)
+	else:
+		if written_normal_offset != marker_offset or marker_offset <= 0:
+			raise RuntimeError(
+				"normal marker offset mismatch: "
+				f"0x{written_normal_offset:X}/0x{marker_offset:X}"
+			)
+		if written_blend_offset != marker_offset + 16:
+			raise RuntimeError(
+				"marker is not immediately before blendShapesOffset: "
+				f"0x{written_normal_offset:X}/0x{written_blend_offset:X}"
+			)
+		marker = struct.unpack_from("<IIII", verification_data, marker_offset)
+		expected_marker = (mode, 0, 0, 0)
+		if marker != expected_marker:
+			raise RuntimeError(
+				f"marker mismatch for mode {mode}: "
+				f"{marker}/{expected_marker}"
+			)
+	written_stream_info = struct.unpack_from("<Q", verification_data, 0xA0)[0]
+	if any(verification_data[written_stream_info:written_stream_info + 16]):
 		raise RuntimeError(
-			"marker is not immediately before blendShapesOffset: "
-			f"0x{written_normal_offset:X}/0x{written_blend_offset:X}"
-		)
-	marker = struct.unpack_from("<IIII", verification_data, marker_offset)
-	expected_marker = (mode, 0, 0, 0)
-	if marker != expected_marker:
-		raise RuntimeError(
-			f"marker mismatch for mode {mode}: "
-			f"{marker}/{expected_marker}"
+			f"StreamingInfo at 0x{written_stream_info:X} is not the zero-entry view"
 		)
 	if written_floats_offset != descriptor_offset or descriptor_offset <= 0:
 		raise RuntimeError(

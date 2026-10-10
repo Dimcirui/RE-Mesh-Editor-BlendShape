@@ -66,8 +66,15 @@ def read_double(file_object, endian = '<'):
      return data
 #read null terminated string from file
 def read_string(file_object):
-     data =''.join(iter(lambda: file_object.read(1).decode('utf-8'), '\x00'))
-     return data
+     # Collect the whole null-terminated string before decoding: multi-byte
+     # UTF-8 names (e.g. Japanese shape keys) cannot be decoded byte by byte.
+     data = bytearray()
+     while True:
+          char = file_object.read(1)
+          if not char or char == b'\x00':
+               break
+          data += char
+     return data.decode('utf-8', 'replace')
 def read_unicode_string(file_object):#Reads unicode string from file into utf-8 string
 	wchar = file_object.read(2)
 	byteString = wchar

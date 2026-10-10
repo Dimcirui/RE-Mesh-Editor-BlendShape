@@ -124,6 +124,14 @@ def _game_supports_blend_shapes(gameName):
 	return str(gameName) in BLEND_SHAPE_EXPORT_GAMES
 
 
+def _is_baked_shape_key(key):
+	"""Locked keys are baked into the exported basis at their current value."""
+	return (
+		bool(getattr(key, "lock_shape", False))
+		and key != key.id_data.reference_key
+	)
+
+
 def _get_export_shape_keys(meshData):
 	if meshData.shape_keys is None:
 		return (None, [])
@@ -135,16 +143,41 @@ def _get_export_shape_keys(meshData):
 		key for key in keyBlocks
 		if key != basis
 		and not str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+		and not key.mute
+		and not _is_baked_shape_key(key)
 	]
+	bakedKeys = [
+		f"{key.name}={key.value:.3f}" + (" (muted, no effect)" if key.mute else "")
+		for key in keyBlocks
+		if key != basis and _is_baked_shape_key(key)
+	]
+	if bakedKeys:
+		print(
+			"Baked locked shape keys into the basis (not exported): "
+			+ ", ".join(bakedKeys)
+		)
 	skippedDummyKeys = [
 		str(key.name) for key in keyBlocks
 		if key != basis
 		and str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
 	]
+	# Unticked (muted) keys are excluded like DUMMY_ keys.
+	skippedMutedKeys = [
+		str(key.name) for key in keyBlocks
+		if key != basis
+		and key.mute
+		and not str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+		and not _is_baked_shape_key(key)
+	]
 	if skippedDummyKeys:
 		print(
 			"Skipped DUMMY_ shape keys during blendshape export: "
 			+ ", ".join(skippedDummyKeys)
+		)
+	if skippedMutedKeys:
+		print(
+			"Skipped unticked (muted) shape keys during blendshape export: "
+			+ ", ".join(skippedMutedKeys)
 		)
 	return (basis, shapeKeys)
 
@@ -154,13 +187,64 @@ def _temporarily_zero_shape_key_values(obj):
 	stored = []
 	for key in obj.data.shape_keys.key_blocks:
 		stored.append((key, key.value))
-		if key.name != "Basis":
+		if key.name != "Basis" and not _is_baked_shape_key(key):
 			key.value = 0.0
 	return stored
 
 def _restore_shape_key_values(storedValues):
 	for key, value in storedValues:
 		key.value = value
+
+def _corner_normal_arrays(mesh):
+	"""(vertex index, unit normal) of every corner of an evaluated mesh copy."""
+	count = len(mesh.loops)
+	vertices = np.empty(count, dtype=np.int32)
+	mesh.loops.foreach_get("vertex_index", vertices)
+	normals = np.empty(count * 3, dtype=np.float32)
+	if hasattr(mesh, "corner_normals"):
+		mesh.corner_normals.foreach_get("vector", normals)
+	else:
+		mesh.calc_normals_split()
+		mesh.loops.foreach_get("normal", normals)
+	normals = normals.reshape((-1, 3))
+	lengths = np.linalg.norm(normals, axis=1)
+	normals[lengths > 0] /= lengths[lengths > 0, None]
+	return vertices, normals
+
+
+def _closest_corners(cornerVertices, cornerNormals, mappedIndices, exportNormals):
+	"""Per export row, the raw corner at its vertex whose normal matches best."""
+	order = np.argsort(cornerVertices, kind="stable")
+	sortedVertices = cornerVertices[order]
+	starts = np.searchsorted(sortedVertices, mappedIndices, side="left")
+	ends = np.searchsorted(sortedVertices, mappedIndices, side="right")
+	result = np.full(len(mappedIndices), -1, dtype=np.int64)
+	for row, (start, end) in enumerate(zip(starts, ends)):
+		if mappedIndices[row] < 0 or start == end:
+			continue
+		candidates = order[start:end]
+		result[row] = candidates[
+			int(np.argmax(cornerNormals[candidates] @ exportNormals[row]))
+		]
+	return result
+
+
+def _rotate_normals(normals, source, target):
+	"""Rotate each normal by the shortest rotation taking source onto target."""
+	axis = np.cross(source, target)
+	cos = np.sum(source * target, axis=1)
+	safe = np.where(cos > -0.9999, 1.0 + cos, 1.0)
+	result = (
+		normals * cos[:, None]
+		+ np.cross(axis, normals)
+		+ axis * (np.sum(axis * normals, axis=1) / safe)[:, None]
+	)
+	result = np.where((cos > -0.9999)[:, None], result, target)
+	lengths = np.linalg.norm(result, axis=1)
+	result[lengths > 0] /= lengths[lengths > 0, None]
+	# Untouched corners keep the exact base normal (bit-identical int8 rows).
+	return np.where((cos > 0.9999999)[:, None], normals, result).astype(np.float32)
+
 
 def _build_blend_shape_entries_for_export(
 	rawsubmesh,
@@ -169,8 +253,15 @@ def _build_blend_shape_entries_for_export(
 	gameName,
 	evaluatedBasisMesh,
 	exportShapeKeys=True,
+	exportNormals=None,
 ):
-	"""Evaluate each Blender key through the same geometry path as the basis."""
+	"""Evaluate each Blender key through the same geometry path as the basis.
+
+	With exportNormals (the rows' exported normals) each entry also gets
+	`normals`: the row normal after the key is applied. The basis-to-key turn
+	of the matching evaluated corner is applied to the exported normal, so
+	authored normals stay authored and only the deformation is added.
+	"""
 	if (
 		not _game_supports_blend_shapes(gameName)
 		or evaluatedBasisMesh is None
@@ -192,11 +283,20 @@ def _build_blend_shape_entries_for_export(
 		rawBasisMesh = bpy.data.meshes.new_from_object(
 			rawsubmesh.evaluated_get(depsgraph)
 		)
+		# Corner normals are read before triangulation: basis and key copies
+		# share the untriangulated corner order, triangulation may differ.
+		rawBasisMesh.transform(transformMatrix)
+		wantNormals = exportNormals is not None and len(exportNormals) == len(
+			sourceVertexIndexList
+		)
+		if wantNormals:
+			basisCornerVertices, basisCornerNormals = _corner_normal_arrays(
+				rawBasisMesh
+			)
 		if any(
 			len(face.vertices) != 3 for face in rawBasisMesh.polygons
 		):
 			triangulateMesh(rawBasisMesh)
-		rawBasisMesh.transform(transformMatrix)
 
 		def positionKey(coordinate):
 			return (
@@ -225,9 +325,18 @@ def _build_blend_shape_entries_for_export(
 					mappedSourceIndices.append(-1)
 			else:
 				mappedSourceIndices.append(-1)
+		if wantNormals:
+			baseNormals = np.asarray(exportNormals, dtype=np.float32).reshape((-1, 3))
+			rowCorners = _closest_corners(
+				basisCornerVertices,
+				basisCornerNormals,
+				np.asarray(mappedSourceIndices, dtype=np.int64),
+				baseNormals,
+			)
+			hasCorner = rowCorners >= 0
 		for shapeKey in shapeKeys:
 			for key in rawsubmesh.data.shape_keys.key_blocks:
-				if key.name != "Basis":
+				if key.name != "Basis" and not _is_baked_shape_key(key):
 					key.value = 0.0
 			shapeKey.value = 1.0
 			rawsubmesh.data.update()
@@ -236,13 +345,31 @@ def _build_blend_shape_entries_for_export(
 			shapeMesh = bpy.data.meshes.new_from_object(
 				rawsubmesh.evaluated_get(depsgraph)
 			)
+			shapeNormals = None
 			try:
+				shapeMesh.transform(transformMatrix)
+				if wantNormals:
+					shapeCornerVertices, shapeCornerNormals = _corner_normal_arrays(
+						shapeMesh
+					)
+					if np.array_equal(shapeCornerVertices, basisCornerVertices):
+						shapeNormals = baseNormals.copy()
+						corners = rowCorners[hasCorner]
+						shapeNormals[hasCorner] = _rotate_normals(
+							baseNormals[hasCorner],
+							basisCornerNormals[corners],
+							shapeCornerNormals[corners],
+						)
+					else:
+						print(
+							f"Shape key {shapeKey.name} on {rawsubmesh.name} changes "
+							"topology; exporting its base normals"
+						)
 				if any(
 					len(face.vertices) != 3
 					for face in shapeMesh.polygons
 				):
 					triangulateMesh(shapeMesh)
-				shapeMesh.transform(transformMatrix)
 				deltas = []
 				for rowIndex, sourceIndex in enumerate(
 					sourceVertexIndexList
@@ -267,6 +394,7 @@ def _build_blend_shape_entries_for_export(
 			entry = BlendShape()
 			entry.blendShapeName = shapeKey.name
 			entry.deltas = np.asarray(deltas, dtype=np.float32)
+			entry.normals = shapeNormals
 			result.append(entry)
 	finally:
 		if "rawBasisMesh" in locals():
@@ -1376,7 +1504,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	)
 	if gameName == "MHWILDS":
 		from .mhwilds_blendshape import set_export_mode
-		selectedBlendShapeMode = int(options.get("blendShapeExportMode", 0))
+		selectedBlendShapeMode = int(options.get("blendShapeExportMode", -1))
 		set_export_mode(parsedMesh, selectedBlendShapeMode)
 		print(
 			f"Blendshape export mode: {selectedBlendShapeMode}; "
@@ -1886,6 +2014,16 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				if meshHasColor:
 					parsedMesh.bufferHasColor = True
 
+				# Read layers once: every vertex_colors[0] lookup goes through the
+				# legacy wrapper again (~0.7 ms per corner, most of the export time).
+				uv0Data = evaluatedSubMeshData.uv_layers[0].data if meshHasUV else None
+				uv1Data = evaluatedSubMeshData.uv_layers[1].data if meshHasUV2 else None
+				cornerColors = None
+				if meshHasColor:
+					cornerColors = np.empty(len(evaluatedSubMeshData.loops) * 4, dtype=np.float32)
+					evaluatedSubMeshData.vertex_colors[0].data.foreach_get("color", cornerColors)
+					cornerColors = cornerColors.reshape((-1, 4))
+
 				if armatureObj != None:
 					parsedMesh.bufferHasWeight = True
 
@@ -2032,9 +2170,9 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 							tangentPacked = _pack_loop_tangent(loop)
 
-							uv0 = evaluatedSubMeshData.uv_layers[0].data[loopIndex].uv.copy() if meshHasUV else None
-							uv1 = evaluatedSubMeshData.uv_layers[1].data[loopIndex].uv.copy() if meshHasUV2 else None
-							color = evaluatedSubMeshData.vertex_colors[0].data[loopIndex].color if meshHasColor else None
+							uv0 = uv0Data[loopIndex].uv.copy() if meshHasUV else None
+							uv1 = uv1Data[loopIndex].uv.copy() if meshHasUV2 else None
+							color = tuple(cornerColors[loopIndex].tolist()) if meshHasColor else None
 
 							# Splitting if the loop normal, UV, tangent, or color attrib. is different.
 							exportKey = (srcVertIndex,	_round_tuple(normal), tangentPacked, _round_tuple(uv0) if uv0 is not None else None, _round_tuple(uv1) if uv1 is not None else None, _round_tuple(color) if color is not None else None,)
@@ -2191,7 +2329,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						usedOriginalVertexIndices.add(currentVertIndex)
 
 						if meshHasUV:
-							uv = evaluatedSubMeshData.uv_layers[0].data[loop.index].uv
+							uv = uv0Data[loop.index].uv
 							parsedSubMesh.uvList[currentVertIndex] = uv
 
 							if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
@@ -2200,7 +2338,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 								UVPoints[currentVertIndex] = uv
 
 						if meshHasUV2:
-							uv2 = evaluatedSubMeshData.uv_layers[1].data[loop.index].uv
+							uv2 = uv1Data[loop.index].uv
 							parsedSubMesh.uv2List[currentVertIndex] = uv2
 
 							if currentVertIndex in UV2Points and UV2Points[currentVertIndex] != uv2:
@@ -2219,7 +2357,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						parsedSubMesh.tangentList[currentVertIndex] = _pack_loop_tangent(loop)
 
 						if meshHasColor:
-							parsedSubMesh.colorList[currentVertIndex] = evaluatedSubMeshData.vertex_colors[0].data[loop.index].color
+							parsedSubMesh.colorList[currentVertIndex] = cornerColors[loop.index]
 
 						if parsedMesh.bufferHasWeight:
 							(
@@ -2280,6 +2418,13 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						gameName,
 						evaluatedSubMeshData,
 						exportShapeKeys=blendShapeExportEnabled,
+						# Keep-normals payloads store each key's own normals.
+						exportNormals=(
+							parsedSubMesh.normalList
+							if gameName == "MHWILDS"
+							and options.get("blendShapeExportMode") == -1
+							else None
+						),
 					)
 				)
 				if gameName == "MHWILDS":

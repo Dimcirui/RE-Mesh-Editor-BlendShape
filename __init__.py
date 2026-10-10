@@ -1021,20 +1021,25 @@ class ExportREMesh(Operator, ExportHelper):
 			(
 				"NO",
 				"No",
-				"Do not export Blender shape keys or Wilds blendshape data. Alternatevly, if exporting shapekeys, you can use the prefix 'DUMMY_' for shapekey names to exclude export of them"
+				"Do not export Blender shape keys or Wilds blendshape data. Alternatevly, if exporting shapekeys, you can use the prefix 'DUMMY_' for shapekey names, or untick (mute) them, to exclude export of them"
 			),
 			(
 				"MODE0",
 				"Mode 0",
-				"This keeps shading 1:1 between having or not having blendshapes at all. But may introduce bad shading depending on the runtime settings of the mesh. This is recommended for script mods to take advantage of if they are custom meshes or heavily edited vanilla meshes."
+				"NOT RECOMMENDED: writes normal-recalc marker 0, which vanilla meshes never use. In game it darkened faces under side/back light"
 			),
 			(
 				"MODE1",
 				"Mode 1",
-				"This behaves more so like vanilla meshes, just by having blendshapes (wether geometry is moved or not) shading is slightly different between not having them at all. Recommended for retaining vanilla data. "
+				"Writes normal-recalc marker 1, as vanilla body/armor meshes do. The game recalculates normals from the deformed geometry, so authored custom normals are replaced by recalculated ones"
+			),
+			(
+				"KEEPNORMALS",
+				"Keep Custom Normals",
+				"Vanilla no-recalc layout (as on the Seikret): no normal-recalc marker, no recalc tables, 8-byte delta rows. The game keeps the authored custom normals while shape keys deform the geometry"
 			),
 		],
-		default = "MODE0"
+		default = "KEEPNORMALS"
 	)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
@@ -1196,7 +1201,7 @@ class ExportREMesh(Operator, ExportHelper):
 		shapeKeyExportSelection = self.shapeKeyExportMode
 		if meshVersion == 241111606:
 			exportBlendShapes = shapeKeyExportSelection != "NO"
-			blendShapeExportMode = 0 if shapeKeyExportSelection == "MODE0" else 1
+			blendShapeExportMode = {"MODE0": 0, "KEEPNORMALS": -1}.get(shapeKeyExportSelection, 1)
 		else:
 			exportBlendShapes = False
 			blendShapeExportMode = 0

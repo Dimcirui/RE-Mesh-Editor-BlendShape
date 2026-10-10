@@ -2425,7 +2425,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 				reserve_normal_recalc_marker,
 			)
 			currentOffset = reserve_normal_recalc_marker(
-				reMesh, currentOffset
+				reMesh, currentOffset, parsedMesh
 			)
 			reMesh.fileHeader.blendShapesOffset = currentOffset
 			reMesh.blendShapeHeader = blendShapePlan["header"]

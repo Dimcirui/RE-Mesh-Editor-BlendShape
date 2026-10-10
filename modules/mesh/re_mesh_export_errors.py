@@ -45,12 +45,16 @@ class WM_OT_ShowREMeshErrorWindow(bpy.types.Operator):
 		
 	def invoke(self, context, event):
 		region = bpy.context.region
+		# Exports from scripts or MCP have no region/window; the errors are
+		# already printed to the console, so there is no dialog to show.
+		if region is None or context.window is None:
+			return {'CANCELLED'}
 		centerX = region.width // 2
 		centerY = region.height
-		
+
 		#currentX = event.mouse_region_X
 		#currentY = event.mouse_region_Y
-		
+
 		#Move cursor to center so error window is at the center of the window
 		context.window.cursor_warp(centerX,centerY)
 		for entry in bpy.context.scene.re_mesh_error_list:
