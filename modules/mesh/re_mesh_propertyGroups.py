@@ -160,6 +160,10 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	   name = "Normalize Weights",
 	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
 	   default = True)
+	preserveMaterialTable : BoolProperty(
+	   name = "Preserve Original Material Table",
+	   description = "Keep the original material slot order of the imported mesh, including unused slots. New materials are appended at the end with a warning. Requires a mesh imported with this version of the addon",
+	   default = False)
 	# Mirrors ExportREMesh.shapeKeyExportMode in __init__.py; keep the two in sync.
 	shapeKeyExportMode : EnumProperty(
 		name = "Export Shapekeys?",

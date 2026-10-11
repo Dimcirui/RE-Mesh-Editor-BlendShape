@@ -32,6 +32,7 @@ from .modules.blender_utils import operator_exists
 #mesh
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
 from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile,getMeshWeightLimits
+from .modules.mesh.operation_progress import operation_scope
 from .modules.mesh.re_mesh_propertyGroups import (
 	ExporterNodePropertyGroup,
 	MESH_UL_REExporterList
@@ -912,12 +913,15 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		bpy.context.scene["REMeshDefaultImportSettingsLoaded"] = 1
 		
-		if bpy.context.preferences.addons[__name__].preferences.showConsole:
-			 try: 
-				 bpy.ops.wm.console_toggle()
-			 except:
-				 pass
-		
+		# The console is shown by the progress scope (if hidden) and hidden again
+		# only when every file imported; on failure it stays open with the details.
+		with operation_scope(f"Import {len(self.files)} file(s)") as importScope:
+			result, hasImportErrors = self._importFiles(options)
+			importScope["success"] = not hasImportErrors
+		return result
+	
+	def _importFiles(self, options):
+		#Returns (operator result, whether any file failed)
 		multiFileImport = len(self.files) > 1
 		hasImportErrors = False
 		importedCount = 0
@@ -957,24 +961,17 @@ class ImportREMesh(Operator, ImportHelper):
 			
 			
 		if not hasImportErrors:
-			if bpy.context.preferences.addons[__name__].preferences.showConsole:
-				try: 
-					bpy.ops.wm.console_toggle()
-				except:
-					 pass
-				
-				
 			if not multiFileImport:
 				self.report({"INFO"},"Imported RE Mesh file.")
 			else:
 				self.report({"INFO"},f"Imported {str(len(self.files))} RE Mesh files.")
 			
-			return {"FINISHED"}
+			return {"FINISHED"}, False
 		else:
 			if multiFileImport:
 				self.report({"WARNING"}, f"Imported {importedCount}/{len(self.files)} RE Mesh files; {len(self.files)-importedCount} failed. Check the console for errors.")
 			# Keep partial imports undoable; report a failure only when none succeeded.
-			return {"FINISHED"} if importedCount else {"CANCELLED"}
+			return ({"FINISHED"} if importedCount else {"CANCELLED"}), True
 	
 	def invoke(self, context, event):
 		if not bpy.context.scene.get("REMeshDefaultImportSettingsLoaded"):
@@ -1118,6 +1115,10 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Export Bounding Boxes",
 	   description = "Exports the original bounding boxes from the \"Import Bounding Boxes\" import option. New bounding boxes will be generated for any bones that do not have them",
 	   default = False)
+	preserveMaterialTable : BoolProperty(
+	   name = "Preserve Original Material Table",
+	   description = "Keep the original material slot order of the imported mesh, including slots no exported submesh uses. New materials are appended at the end with a warning and need a matching MDF update. Requires a mesh imported with this version of the addon",
+	   default = False)
 	def invoke(self, context, event):
 		if not bpy.context.scene.get("REMeshDefaultExportSettingsLoaded"):
 			setMeshExportDefaults(self)
@@ -1221,6 +1222,7 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
 		layout.prop(self, "preserveBoneMatrices")
+		layout.prop(self, "preserveMaterialTable")
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
@@ -1257,6 +1259,7 @@ class ExportREMesh(Operator, ExportHelper):
 			"limitTotal": self.limitTotal,
 			"limitTotalCount": self.limitTotalCount,
 			"normalizeWeights": self.normalizeWeights,
+			"preserveMaterialTable": self.preserveMaterialTable,
 		}
 		editorVersion = ".".join(str(part) for part in bl_info["version"])
 		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
@@ -1265,11 +1268,8 @@ class ExportREMesh(Operator, ExportHelper):
 		
 		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
 		
-		if bpy.context.preferences.addons[__name__].preferences.showConsole:
-			try: 
-				bpy.ops.wm.console_toggle()
-			except:
-				pass
+		# exportREMeshFile shows the console (if hidden) through its progress
+		# tracker and hides it again only on success.
 		try:
 			success = exportREMeshFile(self.filepath,options)
 		except Exception as error:
@@ -1294,6 +1294,7 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_useBlenderMaterialName"] = self.useBlenderMaterialName
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveBoneMatrices"] = self.preserveBoneMatrices
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBoundingBoxes"] = self.exportBoundingBoxes
+				bpy.data.collections[self.targetCollection]["BatchExport_preserveMaterialTable"] = self.preserveMaterialTable
 		else:
 			self.report({"ERROR"},"RE Mesh export failed. See Window > Toggle System Console for info on how to fix it.")
 			return {"CANCELLED"}
@@ -1301,11 +1302,6 @@ class ExportREMesh(Operator, ExportHelper):
 		if bpy.context.scene.re_mdf_toolpanel.modDirectory == "":
 			setModDirectoryFromFilePath(self.filepath)
 		
-		if bpy.context.preferences.addons[__name__].preferences.showConsole:
-			try:
-				bpy.ops.wm.console_toggle()
-			except:
-				 pass
 		return {"FINISHED"}
 	
 class ImportREMDF(bpy.types.Operator, ImportHelper):

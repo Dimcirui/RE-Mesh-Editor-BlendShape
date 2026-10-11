@@ -12,6 +12,7 @@ from bpy.props import (StringProperty,
                        EnumProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
+from .operation_progress import operation_scope
 from .re_mesh_propertyGroups import (ExporterNodePropertyGroup, MESH_UL_REExporterList,
 	getBatchMeshWeightLimitDefault, getBatchMeshWeightLimit, setBatchMeshWeightLimit)
 from ..gen_functions import splitNativesPath
@@ -26,6 +27,7 @@ _BATCH_MESH_FIX_DEFAULTS = {
 	"limitTotal": False,
 	"limitTotalCount": 8,
 	"shapeKeyExportMode": "KEEPNORMALS",
+	"preserveMaterialTable": False,
 }
 class WM_OT_DeleteLoose(Operator):
 	bl_label = "Delete Loose Geometry"
@@ -386,6 +388,28 @@ class WM_OT_REBatchExporter(Operator):
 		if not exportItemList:
 			self.report({"WARNING"}, "No files are enabled for batch export.")
 			return {"CANCELLED"}
+		# One console/progress owner for the whole batch: per-file exports do not
+		# flash the console, and it stays open if any item failed.
+		with operation_scope(f"Batch export {len(exportItemList)} file(s)") as batchScope:
+			failCount, failures = self._exportItems(exportItemList)
+			batchScope["success"] = failCount == 0
+		if failCount != 0:
+			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details. (Window > Toggle System Console)"
+			if failures:
+				message += " First failure: " + failures[0]
+			self.report({"WARNING"}, message)
+			if not bpy.app.background:
+				def draw_failure(popup, context):
+					for line in textwrap.wrap(message, width=88):
+						popup.layout.label(text=line)
+				context.window_manager.popup_menu(draw_failure, title="Batch Export Failed", icon="ERROR")
+			return {"CANCELLED"}
+		else:
+			self.report({"INFO"},"Batch export finished successfully.")
+		return {'FINISHED'}
+
+	def _exportItems(self, exportItemList):
+		#Returns (failCount, failure messages)
 		failCount = 0
 		failures = []
 		for index,exportItem in enumerate(exportItemList):
@@ -423,6 +447,7 @@ class WM_OT_REBatchExporter(Operator):
 						useBlenderMaterialName = exportItem.useBlenderMaterialName,
 						preserveBoneMatrices = exportItem.preserveBoneMatrices,
 						exportBoundingBoxes = exportItem.exportBoundingBoxes,
+						preserveMaterialTable = getattr(exportItem, "preserveMaterialTable", False),
 						)
 					if "FINISHED" not in result:
 						failCount += 1
@@ -500,20 +525,7 @@ class WM_OT_REBatchExporter(Operator):
 			else:
 				print(f"Unsupported File Type ({exportItem.exportType}), skipping")
 				failCount += 1
-		if failCount != 0:
-			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details. (Window > Toggle System Console)"
-			if failures:
-				message += " First failure: " + failures[0]
-			self.report({"WARNING"}, message)
-			if not bpy.app.background:
-				def draw_failure(popup, context):
-					for line in textwrap.wrap(message, width=88):
-						popup.layout.label(text=line)
-				context.window_manager.popup_menu(draw_failure, title="Batch Export Failed", icon="ERROR")
-			return {"CANCELLED"}
-		else:
-			self.report({"INFO"},"Batch export finished successfully.")
-		return {'FINISHED'}
+		return failCount, failures
 
 	def populate(self, context):
 		parentDict = {None:None}
@@ -632,6 +644,7 @@ class WM_OT_REBatchExporter(Operator):
 					box.prop(item, "rotate90")
 					box.prop(item, "useBlenderMaterialName")
 					box.prop(item, "preserveBoneMatrices")
+					box.prop(item, "preserveMaterialTable")
 					box.prop(item, "exportBoundingBoxes")
 			else:
 				box.label(text=f"Select a file from the list to configure export settings.")

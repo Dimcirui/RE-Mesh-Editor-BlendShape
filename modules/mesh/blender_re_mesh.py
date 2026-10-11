@@ -16,7 +16,10 @@
 import bpy
 import bmesh
 import os
+import json
 from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection
+from .operation_progress import tracked_operation, stage as progress_stage
+from .material_table import KEY as MATERIAL_TABLE_KEY, decode_table, preserve_table
 from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
@@ -696,6 +699,7 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 			if index >= len(boneNameList):
 				raise Exception("Invalid mesh, bone weight index is invalid")
 	"""
+	progress_stage("Creating mesh: " + meshName)
 	meshData = bpy.data.meshes.new(meshName)
 	#Import vertices and faces
 	if vertexList == []:
@@ -1089,7 +1093,9 @@ def resolveMeshGameNameConflict(gameName,filePath):
 
 #---RE MESH IO FUNCTIONS---#
 
+@tracked_operation("Import")
 def importREMeshFile(filePath,options):
+	progress_stage("Reading and validating mesh data", 5)
 	meshImportStartTime = time.time()
 	fileName = os.path.split(filePath)[1].split(".mesh")[0]
 	try:
@@ -1144,6 +1150,7 @@ def importREMeshFile(filePath,options):
 				warningList.append("Could not read MDF material names from " + mdfPath + ": " + str(err))
 			if mdfFile != None and applyMDFMaterialNames(parsedMesh,mdfFile):
 				print("Mesh has no material remap list, using MDF material order.")
+	progress_stage("Creating armature and mesh objects", 25)
 	#Clear the scene only after the mesh file has been read and parsed so a failed read doesn't leave an emptied scene
 	if options["clearScene"]:
 		for collection in bpy.data.collections:
@@ -1175,6 +1182,8 @@ def importREMeshFile(filePath,options):
 		meshCollection.color_tag = "COLOR_01"
 		meshCollection["~TYPE"] = "RE_MESH_COLLECTION"
 		meshCollection["LODGroupNameHash"] = str(reMesh.fileHeader.lodGroupNameHash)
+		# Original slot order for the opt-in Preserve Original Material Table export option
+		meshCollection[MATERIAL_TABLE_KEY] = json.dumps(parsedMesh.materialNameList, ensure_ascii=False)
 		try:
 				split = splitNativesPath(filePath)
 				if split != None:
@@ -1232,6 +1241,7 @@ def importREMeshFile(filePath,options):
 	
 	
 	meshOffsetDict.clear()
+	progress_stage("Loading materials and optional resources", 90)
 	if options["loadMaterials"] or options["loadMDFData"]:
 		#print(filePath.split(".mesh")[1])
 		try:
@@ -1294,22 +1304,16 @@ def importREMeshFile(filePath,options):
 	print("\033[92m__________________________________\nRE Mesh import finished.\033[0m")
 	return (warningList,errorList)
 
-def checkObjForUVDoubling(obj):
-	hasUVDoubling = False
-	UVPoints = dict()
-	if len(obj.data.uv_layers) > 0:
+def checkObjForUVDoubling(obj, uvLimit=None):
+	#Checks every exported UV map (the first uvLimit maps), not only UV0
+	for layer in list(obj.data.uv_layers)[:uvLimit]:
+		UVPoints = dict()
 		for loop in obj.data.loops:
-			currentVertIndex = loop.vertex_index
-			#Vertex UV
-			uv = obj.data.uv_layers[0].data[loop.index].uv
-			
-			if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
-				hasUVDoubling = True
-				break
-				#raise Exception
-			else:
-				UVPoints[currentVertIndex] = uv
-	return hasUVDoubling
+			uv = tuple(layer.data[loop.index].uv)
+			if loop.vertex_index in UVPoints and UVPoints[loop.vertex_index] != uv:
+				return True
+			UVPoints[loop.vertex_index] = uv
+	return False
 
 #RE Toolbox Solve Repeated UVs
 
@@ -1328,11 +1332,13 @@ def bad_iter(blenderCrap):
             i+=1
         except:
             return
-def selectRepeated(bm):
+def selectRepeated(bm, uvLimit=None):
     bm.verts.index_update()
     bm.verts.ensure_lookup_table()
     targetVert = set()
-    for uv_layer in bad_iter(bm.loops.layers.uv):
+    for layer_index, uv_layer in enumerate(bad_iter(bm.loops.layers.uv)):
+        if uvLimit is not None and layer_index >= uvLimit:
+            break#Omitted reference UV maps must not split exported vertices
         uvMap = {}
         for face in bm.faces:
             for loop in face.loops:
@@ -1343,12 +1349,12 @@ def selectRepeated(bm):
                     uvMap[loop.vert.index] = uvPoint
     return targetVert
 
-def solveRepeatedVertex(op,mesh):
+def solveRepeatedVertex(op,mesh,uvLimit=None):
     bpy.ops.mesh.select_all(action='DESELECT')
     bm = bmesh.from_edit_mesh(mesh.data)
     oldmode = bm.select_mode
     bm.select_mode = {'VERT'}    
-    targets = selectRepeated(bm)
+    targets = selectRepeated(bm, uvLimit)
     for target in targets:
         bmesh.utils.vert_separate(target,target.link_edges)
         bm.verts.ensure_lookup_table()    
@@ -1373,7 +1379,7 @@ def deleteClone(clone):
     objs = bpy.data.objects
     objs.remove(clone, do_unlink=True)	
 
-def solveRepeatedUVs(selection):
+def solveRepeatedUVs(selection, uvLimit=None):
 	context = bpy.context
 	for selectedObj in selection:
 		if selectedObj.type == "MESH":
@@ -1396,13 +1402,22 @@ def solveRepeatedUVs(selection):
 			# mark seams from uv islands
 			bpy.ops.mesh.select_all(action='SELECT')
 			bpy.ops.uv.select_all(action='SELECT')
-			bpy.ops.uv.seams_from_islands()
+			# A reference map may be active even though the target omits it.
+			# Mark islands only from a supported map, restoring the clone's
+			# active map afterwards; source objects are never changed here.
+			activeUVIndex = selectedObj.data.uv_layers.active_index
+			try:
+				if uvLimit is not None and activeUVIndex >= uvLimit:
+					selectedObj.data.uv_layers.active_index = 0
+				bpy.ops.uv.seams_from_islands()
+			finally:
+				selectedObj.data.uv_layers.active_index = activeUVIndex
 			seams = [e for e in bm.edges if e.seam]
 			bmesh.ops.split_edges(bm, edges=seams)
 			for e in old_seams:
 			    e.seam = True
 			bmesh.update_edit_mesh(me)
-			solveRepeatedVertex(None, obj)
+			solveRepeatedVertex(None, obj, uvLimit)
 			bpy.ops.object.mode_set(mode='OBJECT')
 			transferNormals(clone,selectedObj)
 			if bpy.app.version < (4,0,0):
@@ -1450,8 +1465,10 @@ def splitSharpEdges():
 
 
 
+@tracked_operation("Export")
 @owned_export_resources
 def exportREMeshFile(filePath,options):
+	progress_stage("Checking export collection", 2)
 	#TODO Warning Conditions
 	#Invalid mesh naming scheme - notify when using blender material name and setting viscon id to 0
 	#Vertex groups weighted to bones that aren't on the armature
@@ -1543,6 +1560,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		
 	#print(targetCollection)
 	
+	# Validated up front so a missing/invalid table fails before any work is done
+	originalMaterialTable = decode_table(targetCollection.get(MATERIAL_TABLE_KEY)) if options.get("preserveMaterialTable", False) else None
+	# Number of UV maps written to the mesh (UV0/UV1). Further maps are reference-only.
+	uvLimit = 2
 	meshLODCollectionList = []
 	addedMaterialsSet = set()
 	dg = bpy.context.evaluated_depsgraph_get()
@@ -1805,6 +1826,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	boneVertDict = dict()
 	shapeKeyBoneSet = set()#DD2 secondary weights
 	for lodIndex, lod in enumerate(meshLODCollectionList):
+		progress_stage(f"Evaluating LOD {lodIndex}: {lod.name}", 10 + 60 * lodIndex / max(1, len(meshLODCollectionList)))
 		print(f"LOD {lodIndex} collection:{lod.name}")
 		parsedLODLevel = LODLevel()
 		# Default only the exported value; do not write it back to the user's collection.
@@ -1837,7 +1859,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						obj.data.update()
 						bpy.context.view_layer.update()
 						cloneObj.data = bpy.data.meshes.new_from_object(
-							obj.evaluated_get(dg)
+							obj.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg
 						)
 					finally:
 						_restore_shape_key_values(storedShapeValues)
@@ -1845,9 +1867,11 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						bpy.context.view_layer.update()
 				else:
 					cloneObj.data = bpy.data.meshes.new_from_object(
-						obj.evaluated_get(dg)
+						obj.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg
 					)
 				track_mesh(cloneObj.data)
+				if min(len(cloneObj.data.uv_layers), uvLimit) < min(len(obj.data.uv_layers), uvLimit):
+					raise ValueError(f"{obj.name}: the evaluated modifier stack removed UV maps ({len(obj.data.uv_layers)} before, {len(cloneObj.data.uv_layers)} after). Disable the destructive modifier or transfer/reproject UVs onto its result before exporting. The source mesh and existing output were retained.")
 				clonedMeshCollection = temporary_collection()
 				clonedMeshCollection.objects.link(cloneObj)
 				
@@ -1870,7 +1894,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				cloneMeshNameDict[obj.name] = cloneObj.name
 				deleteCopiedMeshList.append(cloneObj)
 				if options["autoSolveRepeatedUVs"]:
-					hasUVDoubling = checkObjForUVDoubling(cloneObj)
+					hasUVDoubling = checkObjForUVDoubling(cloneObj, uvLimit)
 					if hasUVDoubling:
 						#print(f"Found doubled uvs on {obj.name}")
 						doubledUVList.append(cloneObj)
@@ -1930,7 +1954,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				obj.select_set(True)
 				
 			try:
-				solveRepeatedUVs(selection = bpy.context.selected_objects)
+				solveRepeatedUVs(selection = bpy.context.selected_objects, uvLimit=uvLimit)
 			except Exception as err:
 				raiseWarning(f"Failed to solve repeated UVs. {str(err)}")
 			
@@ -2044,7 +2068,11 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					evaluatedSubMeshData.use_auto_smooth = True
 					evaluatedSubMeshData.calc_normals_split()
 				try:
-					evaluatedSubMeshData.calc_tangents()
+					if evaluatedSubMeshData.uv_layers.active_index >= uvLimit:
+						#Active map is an omitted reference map, keep the tangent basis on UV0
+						evaluatedSubMeshData.calc_tangents(uvmap=evaluatedSubMeshData.uv_layers[0].name)
+					else:
+						evaluatedSubMeshData.calc_tangents()
 				except:
 					pass
 				vertexGroupIndexToRemapDict = {vgroup.index: remapDict[vgroup.name.removeprefix("SHAPEKEY_")] for vgroup in rawsubmesh.vertex_groups}
@@ -2068,6 +2096,17 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				meshHasUV2 = len(evaluatedSubMeshData.uv_layers) > 1
 				if meshHasUV2:
 					parsedMesh.bufferHasUV2 = True
+
+				if len(evaluatedSubMeshData.uv_layers) > uvLimit:
+					raiseWarning(f"{rawsubmesh.name}: exporting the first {uvLimit} UV maps. {len(evaluatedSubMeshData.uv_layers) - uvLimit} additional reference UV map(s) remain in Blender and are not written to the mesh.")
+					showWarningMessage = True
+				for uvLayer in list(evaluatedSubMeshData.uv_layers)[:uvLimit]:
+					uvValues = np.empty((len(uvLayer.data), 2), dtype=np.float64)
+					uvLayer.data.foreach_get('uv', uvValues.ravel())
+					uvValues[:, 1] = 1.0 - uvValues[:, 1]
+					#UVs are written as float16
+					if not np.isfinite(uvValues).all() or np.any(np.abs(uvValues) > 65504):
+						raise ValueError(f"{rawsubmesh.name}: UV map '{uvLayer.name}' contains non-finite or out-of-range values for the mesh UV format. Correct the UVs before exporting.")
 
 				meshHasColor = len(evaluatedSubMeshData.vertex_colors) > 0
 				if meshHasColor:
@@ -2537,6 +2576,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		
 	#print(parsedMesh.materialNameList)
 	#Get weights for meshes and calculate bone bounding boxes
+	progress_stage("Building weights and bounding boxes", 75)
 	weightStartTime = time.time()
 	if armatureObj != None:
 		print(f"Generating bone remap dictionary took {timeFormat%(boneRemapTime * 1000)} ms.")
@@ -2658,10 +2698,17 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				parsedMesh.skeleton.weightedBones[index] = hashedBoneNameDict[boneName]
 		
 	
+	if originalMaterialTable is not None:
+		newMaterials = preserve_table(parsedMesh, originalMaterialTable)
+		if newMaterials:
+			raiseWarning("New material slots appended; update the matching MDF: " + ", ".join(newMaterials))
+			showWarningMessage = True
 	meshWriteStartTime = time.time()
+	progress_stage("Serializing mesh buffers", 90)
 	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion, normalizeWeights=options.get("normalizeWeights", True))
 	if targetCollection != None:
 		reMesh.fileHeader.lodGroupNameHash = int(targetCollection.get("LODGroupNameHash","0"))
+	progress_stage("Writing mesh file", 97)
 	writeREMesh(reMesh, filePath)
 	meshWriteEndTime = time.time()
 	meshWriteExportTime =  meshWriteEndTime - meshWriteStartTime
