@@ -16,6 +16,7 @@
 import bpy
 import bmesh
 import os
+from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection
 from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
@@ -64,10 +65,22 @@ def getMeshWeightLimits(gameName):
 	maxTotalWeights = baseWeights * 2 if gameName in EXTENDED_WEIGHT_GAME_NAMES or gameName == "DD2" else baseWeights
 	return (baseWeights, maxTotalWeights, maxWeightedBones)
 
-def limitTotalWeights(obj, limit, separateShapeKeyWeights=False):
+def limitTotalWeights(obj, limit, separateShapeKeyWeights=False, allowedGroupNames=None):
 	if obj is None or obj.type != "MESH" or len(obj.vertex_groups) == 0:
 		return
 	limit = max(1, min(32, int(limit)))
+	if allowedGroupNames is not None:
+		# Export calls this on an evaluated clone. Paint/modifier mask groups
+		# are not bone influences and must neither occupy weight slots nor be
+		# serialized as fallback weights on the first bone.
+		allowedGroupNames = frozenset(allowedGroupNames)
+		groupsByIndex = {group.index: group for group in obj.vertex_groups}
+		for vertex in obj.data.vertices:
+			# Snapshot the group indices before removals change vertex.groups.
+			for groupIndex in [assignment.group for assignment in vertex.groups]:
+				group = groupsByIndex.get(groupIndex)
+				if group is not None and group.name not in allowedGroupNames:
+					group.remove([vertex.index])
 	if separateShapeKeyWeights:
 		limit = min(limit, 8)
 		groupsByIndex = {group.index: group for group in obj.vertex_groups}
@@ -1301,8 +1314,8 @@ def checkObjForUVDoubling(obj):
 #RE Toolbox Solve Repeated UVs
 
 def cloneMesh(mesh):
-    new_obj = mesh.copy()
-    new_obj.data = mesh.data.copy()
+    new_obj = track_object(mesh.copy())
+    new_obj.data = track_mesh(mesh.data.copy())
     bpy.context.scene.collection.objects.link(new_obj)
     return new_obj
 
@@ -1437,6 +1450,7 @@ def splitSharpEdges():
 
 
 
+@owned_export_resources
 def exportREMeshFile(filePath,options):
 	#TODO Warning Conditions
 	#Invalid mesh naming scheme - notify when using blender material name and setting viscon id to 0
@@ -1574,7 +1588,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	if armatureObj != None:
 		print(f"Armature: {armatureObj.name}")
 		parsedMesh.skeleton = Skeleton()
-		exportArmatureData = armatureObj.data.copy()
+		exportArmatureData = track_armature(armatureObj.data.copy())
 		if options["rotate90"]:
 			transform = rotateNeg90Matrix @ armatureObj.matrix_world
 		else:
@@ -1793,9 +1807,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	for lodIndex, lod in enumerate(meshLODCollectionList):
 		print(f"LOD {lodIndex} collection:{lod.name}")
 		parsedLODLevel = LODLevel()
-		if lod.get("LOD Distance") == None:
-			lod["LOD Distance"] = 0.167932*(lodIndex+1)#Player model LOD distance, maybe calculate from a bounding box instead
-		parsedLODLevel.lodDistance = lod["LOD Distance"]
+		# Default only the exported value; do not write it back to the user's collection.
+		parsedLODLevel.lodDistance = lod.get("LOD Distance", 0.167932*(lodIndex+1))#Player model LOD distance, maybe calculate from a bounding box instead
 		
 		#Store all groups as a key in dictionary with submesh list as value
 		visconDict = dict()
@@ -1812,7 +1825,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				
 			if obj.type == "MESH" and not obj.get("MeshExportExclude") and selected:
 				subMeshCount += 1
-				cloneObj = obj.copy()
+				cloneObj = track_object(obj.copy())
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh
 				cloneObj.name ="CLN_" + obj.name
@@ -1834,14 +1847,23 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					cloneObj.data = bpy.data.meshes.new_from_object(
 						obj.evaluated_get(dg)
 					)
-				clonedMeshCollection = getCollection("clonedMeshes")
+				track_mesh(cloneObj.data)
+				clonedMeshCollection = temporary_collection()
 				clonedMeshCollection.objects.link(cloneObj)
 				
 				print(f"Created temporary clone of {obj.name}: {cloneObj.name}")
 				if options.get("limitTotal", False):
 					limitTotalCount = max(1, min(32, int(options.get("limitTotalCount", maxWeightsPerVertexExtended))))
 					try:
-						limitTotalWeights(cloneObj, limitTotalCount, separateShapeKeyWeights=gameName == "DD2")
+						allowedGroupNames = None
+						if armatureObj is not None:
+							# Only bone groups (and DD2 SHAPEKEY_ secondary bone groups) are weights.
+							allowedGroupNames = set(armatureObj.data.bones.keys())
+							if gameName == "DD2":
+								allowedGroupNames.update("SHAPEKEY_" + name for name in armatureObj.data.bones.keys())
+						limitTotalWeights(cloneObj, limitTotalCount,
+							separateShapeKeyWeights=gameName == "DD2",
+							allowedGroupNames=allowedGroupNames)
 						print(f"Limited total weights to {limitTotalCount} on {cloneObj.name}")
 					except Exception as err:
 						raiseWarning(f"Failed to limit total weights on {obj.name}. {str(err)}")
@@ -2607,13 +2629,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	#Clear references
 	newMeshDataList.clear()
 	evaluatedSubMeshData = None
-	if exportArmatureData != None:
-		bpy.data.armatures.remove(exportArmatureData)
-	for mesh in deleteCopiedMeshList:
-		bpy.data.objects.remove(mesh,do_unlink = True)
-		#bpy.data.meshes.remove(mesh)
-	if "clonedMeshes" in bpy.data.collections:
-		bpy.data.collections.remove(bpy.data.collections["clonedMeshes"])
+	# The export resource scope removes the clones, their mesh data, the copied
+	# armature and the clonedMeshes collection on success or on exceptions.
 	deleteCopiedMeshList.clear()
 	cloneMeshNameDict.clear()
 	#print(remapDict)
@@ -2683,7 +2700,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 	print(f"Materials ({str(len(parsedMesh.materialNameList))}):")
 	for materialName in parsedMesh.materialNameList:
 		print(materialName)
-	if showWarningMessage:
+	if showWarningMessage and not bpy.app.background:
 		showMessageBox("Warnings occured during export. Check Window > Toggle System Console for details.",title = "Mesh Export Warning", icon = "ERROR")
 	print("\033[92m__________________________________\nRE Mesh export finished.\033[0m")
 	return True	

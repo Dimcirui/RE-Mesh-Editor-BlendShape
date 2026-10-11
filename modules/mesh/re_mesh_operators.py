@@ -1,6 +1,7 @@
 #Author: NSA Cloud
 import bpy
 import os
+import textwrap
 from bpy.types import Operator
 
 from bpy.props import (StringProperty,
@@ -11,9 +12,21 @@ from bpy.props import (StringProperty,
                        EnumProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
-from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
+from .re_mesh_propertyGroups import (ExporterNodePropertyGroup, MESH_UL_REExporterList,
+	getBatchMeshWeightLimitDefault, getBatchMeshWeightLimit, setBatchMeshWeightLimit)
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
+
+# Per-item mesh options saved on the collection as BatchExport_<name>.
+# Older collections may have none or only some of these.
+_BATCH_MESH_FIX_DEFAULTS = {
+	"autoSolveRepeatedUVs": True,
+	"splitLoopVertices": True,
+	"normalizeWeights": True,
+	"limitTotal": False,
+	"limitTotalCount": 8,
+	"shapeKeyExportMode": "KEEPNORMALS",
+}
 class WM_OT_DeleteLoose(Operator):
 	bl_label = "Delete Loose Geometry"
 	bl_idname = "re_mesh.delete_loose"
@@ -279,7 +292,19 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
-			
+			for name, default in _BATCH_MESH_FIX_DEFAULTS.items():
+				if name == "limitTotalCount":
+					default = getBatchMeshWeightLimitDefault(item.path)
+				try:
+					value = collection.get("BatchExport_" + name, default)
+					if name == "limitTotalCount":
+						setBatchMeshWeightLimit(item, value, "BatchExport_" + name in collection)
+					else:
+						setattr(item, name, value)
+				except (TypeError, ValueError) as err:
+					setattr(item, name, default)
+					print(f"Invalid saved batch setting {name} for {item.name}: {err}")
+
 			if "BatchExport_exportAllLODs" in collection:
 				try:
 					item.exportAllLODs = collection["BatchExport_exportAllLODs"]
@@ -314,6 +339,9 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 							item.path = determineExportPath(split[0],item.exportType,assetPath.replace("/",os.sep),bpy.context.scene)
 				except Exception as err:
 					print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
+		if item.exportType == "MESH" and "BatchExport_limitTotalCount" not in collection:
+			# The auto-determined path decides the game's default weight limit.
+			setBatchMeshWeightLimit(item, getBatchMeshWeightLimitDefault(item.path))
 class WM_OT_REBatchExporter(Operator):
 	bl_label = "RE Batch Exporter"
 	bl_idname = "re_mesh.batch_exporter"
@@ -339,8 +367,11 @@ class WM_OT_REBatchExporter(Operator):
 	skipPrompt : bpy.props.BoolProperty(#Not exposed to user
 	   name = "Skip Conversion Prompt",
 	   description = "",
+	   options = {'HIDDEN', 'SKIP_SAVE'},
 	   default = False)
 	def execute(self, context):
+		if self.skipPrompt:
+			self.populate(context)
 		print("Batch export started.")
 		
 		#Save which files are enabled
@@ -352,33 +383,54 @@ class WM_OT_REBatchExporter(Operator):
 					bpy.data.collections[item.name]["BatchExport_enabled"] = item.enabled
 		
 		exportItemList = [item for item in self.itemList_items if not item.hasChild and item.enabled and item.exportType != ""]
+		if not exportItemList:
+			self.report({"WARNING"}, "No files are enabled for batch export.")
+			return {"CANCELLED"}
 		failCount = 0
+		failures = []
 		for index,exportItem in enumerate(exportItemList):
 			if exportItem.invalid:
 				print(f"Skipping {exportItem.name} ({index+1}/{len(exportItemList)}) due to an invalid export path: {exportItem.path}")
 				failCount += 1
+				failures.append(f"{exportItem.name}: invalid export path: {exportItem.path}")
 				continue
 			
 			
 			
 			print(f"Exporting File: {exportItem.name} ({index+1}/{len(exportItemList)})")
-			os.makedirs(os.path.split(exportItem.path)[0],exist_ok = True)
+			try:
+				os.makedirs(os.path.dirname(os.path.abspath(exportItem.path)),exist_ok = True)
+			except OSError as error:
+				print(f"Cannot create export directory for {exportItem.name}: {error}")
+				failCount += 1
+				failures.append(f"{exportItem.name}: cannot create export directory: {error}")
+				continue
 			if exportItem.exportType == "MESH":
 				try:
-					bpy.ops.re_mesh.exportfile(
+					weightLimit = getBatchMeshWeightLimit(exportItem)
+					result = bpy.ops.re_mesh.exportfile(
 						filepath = exportItem.path,
 						targetCollection = exportItem.name,
 						exportAllLODs = exportItem.exportAllLODs,
 						autoSolveRepeatedUVs = exportItem.autoSolveRepeatedUVs,
 						preserveSharpEdges = exportItem.preserveSharpEdges,
+						splitLoopVertices = getattr(exportItem, "splitLoopVertices", True),
+						normalizeWeights = getattr(exportItem, "normalizeWeights", True),
+						limitTotal = getattr(exportItem, "limitTotal", False),
+						limitTotalCount = weightLimit,
+						shapeKeyExportMode = getattr(exportItem, "shapeKeyExportMode", "KEEPNORMALS"),
 						rotate90 = exportItem.rotate90,
 						useBlenderMaterialName = exportItem.useBlenderMaterialName,
 						preserveBoneMatrices = exportItem.preserveBoneMatrices,
 						exportBoundingBoxes = exportItem.exportBoundingBoxes,
 						)
+					if "FINISHED" not in result:
+						failCount += 1
+						failures.append(f"{exportItem.name}: mesh export was cancelled. See the system console for details.")
 				except Exception as err:
 					print(f"Mesh Export Failed: {str(err)}")
 					failCount += 1
+					failures.append(f"{exportItem.name}: {str(err).strip()}")
 			elif exportItem.exportType == "MDF":
 				try:
 					bpy.ops.re_mdf.exportfile(
@@ -449,19 +501,21 @@ class WM_OT_REBatchExporter(Operator):
 				print(f"Unsupported File Type ({exportItem.exportType}), skipping")
 				failCount += 1
 		if failCount != 0:
-			showErrorMessageBox(f"{failCount}/{len(exportItemList)} files failed to export.\nSee console for details. (Window > Toggle System Console)")
+			message = f"{failCount}/{len(exportItemList)} files failed to export. See the system console for details. (Window > Toggle System Console)"
+			if failures:
+				message += " First failure: " + failures[0]
+			self.report({"WARNING"}, message)
+			if not bpy.app.background:
+				def draw_failure(popup, context):
+					for line in textwrap.wrap(message, width=88):
+						popup.layout.label(text=line)
+				context.window_manager.popup_menu(draw_failure, title="Batch Export Failed", icon="ERROR")
+			return {"CANCELLED"}
 		else:
 			self.report({"INFO"},"Batch export finished successfully.")
 		return {'FINISHED'}
-	
-	def invoke(self, context, event):
-		region = bpy.context.region
-		centerX = region.width // 2
-		centerY = region.height
-		
-		#currentX = event.mouse_region_X
-		#currentY = event.mouse_region_Y
-		
+
+	def populate(self, context):
 		parentDict = {None:None}
 		for collection in bpy.data.collections:
 			parentDict[collection] = None
@@ -510,11 +564,14 @@ class WM_OT_REBatchExporter(Operator):
 								item.path = determineExportPath(split[0],item.exportType,assetPath.replace("/",os.sep),bpy.context.scene)
 					except Exception as err:
 						print(f"Batch Export: Cannot auto determine path for {item.name}: {str(err)}")
+	def invoke(self, context, event):
 		if self.skipPrompt:
 			return self.execute(context)
 		else:
+			self.populate(context)
 			#Move cursor to center so extract window is at the center of the window
-			context.window.cursor_warp(centerX,centerY)
+			if context.region and context.window:
+				context.window.cursor_warp(context.region.width // 2, context.region.height)
 		
 			return context.window_manager.invoke_props_dialog(self,width = EXPORTER_WINDOW_SIZE,confirm_text = "Batch Export Files")
 
@@ -561,9 +618,17 @@ class WM_OT_REBatchExporter(Operator):
 					row.label(text="Path is empty or missing the file version number on the end. ",icon = "ERROR")
 				if item.exportType == "MESH":
 					box.prop(item, "exportAllLODs")
-					#box.prop(self, "exportBlendShapes")
+					if item.path.endswith(".241111606"):
+						box.prop(item, "shapeKeyExportMode")
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
+					box.prop(item,"splitLoopVertices")
+					row = box.row(align=True)
+					row.prop(item,"limitTotal")
+					limitRow = row.row(align=True)
+					limitRow.enabled = item.limitTotal
+					limitRow.prop(item,"limitTotalCount")
+					box.prop(item,"normalizeWeights")
 					box.prop(item, "rotate90")
 					box.prop(item, "useBlenderMaterialName")
 					box.prop(item, "preserveBoneMatrices")
@@ -596,5 +661,4 @@ class WM_OT_QuickBatchExport(Operator):
 	bl_idname = "re_mesh.quick_batch_export"
 	bl_description = "Single click batch export. Works the same as RE Batch Export but there is no prompt to configure settings.\nThe previous settings of RE Batch Export are used."
 	def execute(self, context):
-		bpy.ops.re_mesh.batch_exporter()
-		return {'FINISHED'}
+		return bpy.ops.re_mesh.batch_exporter('EXEC_DEFAULT', skipPrompt=True)

@@ -329,13 +329,13 @@ class ChunkPathPropertyGroup(bpy.types.PropertyGroup):
     path: StringProperty(
         name="Path",
 		subtype="DIR_PATH",
-		description = "Set the path to the natives\STM folder inside the extracted chunk files\nThis determines where textures will be imported from\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
+		description = "Set the path to the natives\\STM folder inside the extracted chunk files\nThis determines where textures will be imported from\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
     )
 
 
 class AddItemOperator(bpy.types.Operator):
 	bl_idname = "re_mesh.chunk_path_list_add_item"
-	bl_description = "Add path to the extracted chunk's natives\STM\ folder.\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
+	bl_description = "Add path to the extracted chunk's natives\\STM\\ folder.\n"+r"Example: I:\RE4_EXTRACT\re_chunk_000\natives\STM"
 	bl_label = "Add Path"
 	
 
@@ -662,7 +662,7 @@ class REMeshPreferences(AddonPreferences):
 			row.prop(self,"textureCachePath")
 			box.label(text="Texture cache path is very long.",icon = "ERROR")
 			box.label(text="File paths may exceed the max length of 255 characters and fail to convert.")
-			box.label(text="Consider changing this to a shorter path such as C:\REMeshTextureCache.")
+			box.label(text="Consider changing this to a shorter path such as C:\\REMeshTextureCache.")
 		else:
 			row.prop(self,"textureCachePath")
 		row = box.row()
@@ -920,28 +920,39 @@ class ImportREMesh(Operator, ImportHelper):
 		
 		multiFileImport = len(self.files) > 1
 		hasImportErrors = False
+		importedCount = 0
 		mergeArmatureName = ""
-		mergeArmatureNameIndex = 1
-		if multiFileImport and self.mergeImportedArmatures:
-			mergeArmatureName = self.files[0].name.split(".mesh")[0] + " Armature"
-			baseMergeArmatureName = mergeArmatureName
-			while mergeArmatureName in bpy.data.armatures:#Get the name of armature that will be imported, this accounts for if there's already an armature with that name imported
-				mergeArmatureName = baseMergeArmatureName + "." + str(mergeArmatureNameIndex).zfill(3)
-				mergeArmatureNameIndex += 1
-			
+		# Each file is imported independently: a failing file is reported and
+		# skipped, the remaining files are still imported.
 		for index, file in enumerate(self.files):
 			filepath = os.path.join(self.directory,file.name)
+			errorMessage = "Import failed; see the system console for details."
 			if multiFileImport:
 				print(f"Multi Mesh Import ({index+1}/{len(self.files)})")
-				if index != 0:
+				if importedCount and self.mergeImportedArmatures and mergeArmatureName:
 					options["mergeArmature"] = mergeArmatureName
-			if os.path.isfile(filepath):
+			if multiFileImport and self.mergeImportedArmatures and not mergeArmatureName:
+				armaturesBefore = set(bpy.data.armatures.keys()) if not options["clearScene"] else set()
+			try:
+				if not os.path.isfile(filepath):
+					raise FileNotFoundError(f"Path does not exist, cannot import file. If you are importing multiple files at once, they must all be in the same directory. Invalid Path: {filepath}")
 				success = importREMeshFile(filepath,options)
+			except Exception as error:
+				success = False
+				errorMessage = str(error) or type(error).__name__
+				print(f"RE Mesh import failed for {file.name}: {errorMessage}")
+			if success:
+				importedCount += 1
 				options["clearScene"] = False#Disable clear scene after first mesh is imported
-				if not success: hasImportErrors = True
+				if multiFileImport and self.mergeImportedArmatures and not mergeArmatureName:
+					# Merge the following files into the armature of the first imported file.
+					if options["mergeArmature"] in bpy.data.armatures:
+						mergeArmatureName = options["mergeArmature"]
+					else:
+						mergeArmatureName = next((armature.name for armature in bpy.data.armatures if armature.name not in armaturesBefore), "")
 			else:
 				hasImportErrors = True
-				raiseWarning(f"Path does not exist, cannot import file. If you are importing multiple files at once, they must all be in the same directory.\nInvalid Path:{filepath}")
+				self.report({"WARNING"} if multiFileImport else {"ERROR"}, f"{file.name}: {errorMessage}")
 			
 			
 			
@@ -960,8 +971,10 @@ class ImportREMesh(Operator, ImportHelper):
 			
 			return {"FINISHED"}
 		else:
-			self.report({"INFO"},"Failed to import RE Mesh. Check the console for errors.")
-			return {"CANCELLED"}
+			if multiFileImport:
+				self.report({"WARNING"}, f"Imported {importedCount}/{len(self.files)} RE Mesh files; {len(self.files)-importedCount} failed. Check the console for errors.")
+			# Keep partial imports undoable; report a failure only when none succeeded.
+			return {"FINISHED"} if importedCount else {"CANCELLED"}
 	
 	def invoke(self, context, event):
 		if not bpy.context.scene.get("REMeshDefaultImportSettingsLoaded"):
@@ -1214,7 +1227,7 @@ class ExportREMesh(Operator, ExportHelper):
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
-			self.report({"INFO"},"Mesh file path is missing number extension. Cannot export.")
+			self.report({"ERROR"},"Mesh file path is missing number extension. Cannot export.")
 			return{"CANCELLED"}
 
 		# Blendshape export is currently implemented only for Monster Hunter Wilds.
@@ -1257,7 +1270,13 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.ops.wm.console_toggle()
 			except:
 				pass
-		success = exportREMeshFile(self.filepath,options)
+		try:
+			success = exportREMeshFile(self.filepath,options)
+		except Exception as error:
+			# The console stays open on failure so the details can be read.
+			print(f"RE Mesh export failed: {error}")
+			self.report({"ERROR"}, f"RE Mesh export failed: {str(error) or type(error).__name__}")
+			return {"CANCELLED"}
 		if success:
 			self.report({"INFO"},"Exported RE Mesh successfully.")
 			if self.targetCollection in bpy.data.collections:
@@ -1268,13 +1287,16 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_limitTotal"] = self.limitTotal
 				bpy.data.collections[self.targetCollection]["BatchExport_limitTotalCount"] = self.limitTotalCount
 				bpy.data.collections[self.targetCollection]["BatchExport_normalizeWeights"] = self.normalizeWeights
+				bpy.data.collections[self.targetCollection]["BatchExport_autoSolveRepeatedUVs"] = self.autoSolveRepeatedUVs
+				bpy.data.collections[self.targetCollection]["BatchExport_shapeKeyExportMode"] = self.shapeKeyExportMode
 				bpy.data.collections[self.targetCollection]["BatchExport_rotate90"] = self.rotate90
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBlendShapes"] = self.exportBlendShapes
 				bpy.data.collections[self.targetCollection]["BatchExport_useBlenderMaterialName"] = self.useBlenderMaterialName
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveBoneMatrices"] = self.preserveBoneMatrices
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBoundingBoxes"] = self.exportBoundingBoxes
 		else:
-			self.report({"INFO"},"RE Mesh export failed. See Window > Toggle System Console for info on how to fix it.")
+			self.report({"ERROR"},"RE Mesh export failed. See Window > Toggle System Console for info on how to fix it.")
+			return {"CANCELLED"}
 		
 		if bpy.context.scene.re_mdf_toolpanel.modDirectory == "":
 			setModDirectoryFromFilePath(self.filepath)

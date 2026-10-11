@@ -22,6 +22,8 @@ IMPORT_MPLY = True
 
 from ..gen_functions import splitNativesPath,getPaddedPos,getBit,setBit,getPaddingAmount,textColors,raiseWarning,raiseError,read_uint,read_int,read_int64,read_uint64,read_float,read_short,read_ushort,read_ubyte,read_unicode_string,read_byte,write_uint,write_int,write_int64,write_uint64,write_float,write_short,write_ushort,write_ubyte,write_unicode_string,write_byte,read_string,write_string
 import os
+import stat
+import tempfile
 import numpy as np
 import struct
 from io import BytesIO
@@ -2683,6 +2685,46 @@ def readREMesh(filepath,lodTarget = None):
 	file.close()
 	return reMeshFile
 def writeREMesh(reMeshFile,filepath):
+	"""Write the mesh atomically so a failed export never truncates prior output.
+
+	The temporary file keeps the numeric version suffix because the writers
+	(including the Wilds blendshape dispatch) select the format from it.
+	Symlinks are resolved so exporting through a link updates its target, and
+	the temporary file stays in the destination directory for os.replace.
+	"""
+	filepath = os.fspath(filepath)
+	destination = os.path.realpath(filepath)
+	oldMode = None
+	try:
+		existing = os.stat(destination)
+	except FileNotFoundError:
+		pass
+	else:
+		if not stat.S_ISREG(existing.st_mode):
+			raise OSError("Mesh destination is not a regular file: " + filepath)
+		oldMode = stat.S_IMODE(existing.st_mode)
+		if not oldMode & 0o222:
+			raise PermissionError("Mesh destination is read-only: " + filepath)
+	fd, temporary = tempfile.mkstemp(prefix=".re-mesh-",
+		suffix=os.path.splitext(filepath)[1], dir=os.path.dirname(destination))
+	os.close(fd)
+	try:
+		result = _writeREMeshDirect(reMeshFile, temporary)
+		if result is False:
+			raise RuntimeError("Mesh serializer reported failure: " + filepath)
+		# Writers must finish and close before the commit (required on Windows).
+		with open(temporary, "r+b") as written:
+			os.fsync(written.fileno())
+		if oldMode is not None:
+			os.chmod(temporary, oldMode)
+		os.replace(temporary, destination)
+		print("Wrote " + destination)
+		return result
+	finally:
+		if os.path.exists(temporary):
+			os.unlink(temporary)
+
+def _writeREMeshDirect(reMeshFile,filepath):
 	# Dispatch custom blendshape writers by generic handler key. Monster Hunter
 	# Wilds is currently the only registered implementation.
 	blendShapeWriter = getattr(reMeshFile, "_blendShapeWriter", None)
@@ -2710,5 +2752,7 @@ def writeREMesh(reMeshFile,filepath):
 		meshVersion = 2109148288#MHRSB
 	version = newVersionToMeshFileVersion.get(meshVersion,getNearestRemapVersion(meshVersion))
 	reMeshFile.meshVersion = meshVersion
-	reMeshFile.write(file,version)
-	file.close()
+	try:
+		reMeshFile.write(file,version)
+	finally:
+		file.close()
