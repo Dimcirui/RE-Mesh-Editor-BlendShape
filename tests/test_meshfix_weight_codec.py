@@ -48,6 +48,21 @@ class WeightCodecChecks(unittest.TestCase):
 		self.assertEqual(normalized[1].sum(), 0)
 		self.assertEqual(raw[1].sum(), 0)
 
+	def test_weight_writer_binds_empty_rows_to_slot_zero(self):
+		# NSA behavior: an unweighted vertex gets 100% on slot 0 instead of an all-zero row
+		weights = np.array([[.25, .25, 0, 0, 0, 0, 0, 0], [0] * 8])
+		indices = np.array([[3, 4, 0, 0, 0, 0, 0, 0], [0] * 8], dtype="<H")
+		for normalizeWeights in (True, False):
+			with self.subTest(normalizeWeights=normalizeWeights):
+				output = BytesIO()
+				codec.WriteToWeightBuffer(output, weights, indices, False, normalizeWeights)
+				rows = np.frombuffer(output.getvalue(), dtype=np.uint8).reshape((2, 16))
+				np.testing.assert_array_equal(rows[1, 8:], [255, 0, 0, 0, 0, 0, 0, 0])
+		output = BytesIO()
+		codec.WriteToWeightBuffer(output, weights, indices, False, True, fillEmptyRows=False)
+		rows = np.frombuffer(output.getvalue(), dtype=np.uint8).reshape((2, 16))
+		self.assertEqual(int(rows[1, 8:].sum()), 0)
+
 	def test_wilds_and_onimusha_extended_eight_four_layout(self):
 		primary_indices = np.array([[1, 2, 3, 4, 5, 6, 0, 0]], dtype="<H")
 		extra_indices = np.array([[7, 8, 9, 10, 11, 12, 0, 0]], dtype="<H")

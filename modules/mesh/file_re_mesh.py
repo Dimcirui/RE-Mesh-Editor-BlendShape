@@ -1909,7 +1909,16 @@ def WriteToUVBuffer(bufferStream,uvList):
 	uvArray[1::2] = 1.0 - uvArray[1::2]
 	bufferStream.write(uvArray.astype(np.dtype("<e")).tobytes())
 
-def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
+def _fillEmptyWeightRows(quantizedWeights):
+	# NSACloud's writer gave a vertex with no usable weights 100% on slot 0
+	# (bone index 0 = first weighted bone). An all-zero row is never valid for
+	# the skinning shader: the vertex collapses to the origin in game.
+	emptyRows = np.sum(quantizedWeights, axis=1, dtype=np.int32) == 0
+	if emptyRows.any():
+		quantizedWeights[emptyRows, 0] = 255
+	return quantizedWeights
+
+def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True, fillEmptyRows=False):
 	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,
 	# (The one that normalizes the Blender float values before the byte conversion.)
 	boneWeightsArray = np.array(boneWeightsArray, dtype=np.float64)
@@ -1921,7 +1930,9 @@ def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
 
 	if not normalizeWeights:
 		quantizedWeights = np.rint(boneWeightsArray * 255.0)
-		quantizedWeights = np.clip(quantizedWeights, 0, 255)
+		quantizedWeights = np.clip(quantizedWeights, 0, 255).astype(np.int32)
+		if fillEmptyRows:
+			quantizedWeights = _fillEmptyWeightRows(quantizedWeights)
 		return quantizedWeights.astype("<B")
 
 	weightSums = np.sum(boneWeightsArray, axis=1, dtype=np.float64)
@@ -1963,6 +1974,8 @@ def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
 					remaining -= 1
 
 	quantizedWeights = np.clip(quantizedWeights, 0, 255)
+	if fillEmptyRows:
+		quantizedWeights = _fillEmptyWeightRows(quantizedWeights)
 	return quantizedWeights.astype("<B")
 
 
@@ -1985,7 +1998,7 @@ def PackSixWeightIndices(boneIndicesList):
 	return packed.astype("<u8", copy=False).reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
 
 
-def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True,version=None):
+def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True,version=None,fillEmptyRows=True):
 	
 	if isSixWeight:
 		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
@@ -1998,7 +2011,7 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 	
 	
 	
-	boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsList, normalizeWeights)
+	boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsList, normalizeWeights, fillEmptyRows)
 	
 	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
@@ -2032,11 +2045,11 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 		boneWeightsArray = np.asarray(boneWeightsList, dtype=np.float64)[:, :6]
 		extraBoneWeightsArray = np.asarray(extraBoneWeightsList, dtype=np.float64)[:, :6]
 		boneWeightsArray = np.hstack((boneWeightsArray,extraBoneWeightsArray))
-		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
+		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights, fillEmptyRows=True)
 	else:
 		boneWeightsArray = np.array(boneWeightsList)
 		boneWeightsArray = np.hstack((boneWeightsArray,np.array(extraBoneWeightsList)))
-		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
+		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights, fillEmptyRows=True)
 	
 	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
@@ -2251,7 +2264,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						
 						#DD2 shapekeys
 						if len(parsedSubMesh.secondaryWeightIndicesList) != 0 and len(parsedSubMesh.secondaryWeightIndicesList) == len(parsedSubMesh.secondaryWeightList):
-							WriteToWeightBuffer(secondaryWeightBuffer,parsedSubMesh.secondaryWeightList,parsedSubMesh.secondaryWeightIndicesList,isSixWeight,normalizeWeights)
+							WriteToWeightBuffer(secondaryWeightBuffer,parsedSubMesh.secondaryWeightList,parsedSubMesh.secondaryWeightIndicesList,isSixWeight,normalizeWeights,fillEmptyRows=False)
 						
 						
 						#Add vertex color if it's missing and other meshes have it

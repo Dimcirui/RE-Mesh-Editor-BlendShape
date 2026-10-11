@@ -2138,6 +2138,9 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 					return (tx, ty, tz, sign)
 
+				#Vertices without a usable bone weight are bound fully to the first weighted bone by the weight writer
+				unweightedVertexIndices = set()
+
 				def _get_vertex_weights(vertex):
 					MIN_WEIGHT = 0.002
 
@@ -2185,6 +2188,9 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 							if parsedMesh.skeleton != None and remappedBoneIndex < len(parsedMesh.skeleton.weightedBones):
 								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
+
+					if not weightList:
+						unweightedVertexIndices.add(vertex.index)
 
 					if len(weightList) > maxWeightsPerVertex:
 						if gameName != "DD2":
@@ -2496,6 +2502,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						f"Legacy vertex export on {rawsubmesh.name}: "
 						f"{legacyVertexCount} exported vertices"
 					)
+
+				if unweightedVertexIndices:
+					raiseWarning(f"{rawsubmesh.name}: {len(unweightedVertexIndices)} vertices have no bone weight of at least 0.002 and were bound fully to the first weighted bone ({parsedMesh.skeleton.weightedBones[0] if parsedMesh.skeleton != None and parsedMesh.skeleton.weightedBones else 'bone index 0'}). Weight paint them if they should follow another bone.")
+					showWarningMessage = True
 
 				# Preserve generic source-row provenance from the CURRENT evaluated
 				# Blender mesh. Game-specific blendshape handlers may use this to
