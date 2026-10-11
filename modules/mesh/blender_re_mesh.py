@@ -454,6 +454,27 @@ def joinObjects(objList):
 			   bpy.ops.object.join()
 	return bpy.context.active_object
 	
+def applyMDFMaterialNames(parsedMesh,mdfFile):
+	#Used when the mesh has no material remap list, material indices then follow the MDF material order
+	maxMaterialIndex = -1
+	for lod in parsedMesh.mainMeshLODList:
+		for group in lod.visconGroupList:
+			for subMesh in group.subMeshList:
+				maxMaterialIndex = max(maxMaterialIndex,subMesh.materialIndex)
+	if maxMaterialIndex < 0:
+		return False
+	mdfMaterialNames = [material.materialName for material in mdfFile.materialList]
+	if not mdfMaterialNames:
+		return False
+	materialNameList = []
+	for materialIndex in range(maxMaterialIndex + 1):
+		if materialIndex < len(mdfMaterialNames):
+			materialNameList.append(mdfMaterialNames[materialIndex])
+		else:
+			materialNameList.append(f"Material_{materialIndex:03d}")
+	parsedMesh.materialNameList = materialNameList
+	return True
+
 def createMaterialDict(materialNameList):
 	materialDict = {}
 	for materialName in materialNameList:
@@ -749,7 +770,12 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 	if vertexGroupWeightListSecondary != [] and boneNameList != []:
 		#print("Importing secondary weights")
 		#Only create vertex groups for bones that get used
-		usedBoneIndices = sorted(list({x for vertex in vertexGroupBoneIndicesListSecondary for x in vertex}))#Get all used bone indices in hierarchy order
+		usedBoneIndices = sorted({
+			boneIndex
+			for boneIndexList, weightList in zip(vertexGroupBoneIndicesListSecondary, vertexGroupWeightListSecondary)
+			for boneIndex, weight in zip(boneIndexList, weightList)
+			if weight > 0
+			})#Get bone indices that receive an actual secondary weight, in hierarchy order
 		#print(boneNameList)
 		if len(boneNameList) > 1:
 			#print(boneNameList)
@@ -1068,27 +1094,6 @@ def importREMeshFile(filePath,options):
 	warningList = []
 	errorList = []
 	
-	if options["clearScene"]:
-		for collection in bpy.data.collections:
-			for obj in collection.objects:
-				collection.objects.unlink(obj)
-			bpy.data.collections.remove(collection)
-		for bpy_data_iter in (bpy.data.objects,bpy.data.meshes,bpy.data.lights,bpy.data.cameras):
-			for id_data in bpy_data_iter:
-				bpy_data_iter.remove(id_data)
-		for material in bpy.data.materials:
-			bpy.data.materials.remove(material)
-		for amt in bpy.data.armatures:
-			bpy.data.armatures.remove(amt)
-		for obj in bpy.data.objects:
-			bpy.data.objects.remove(obj)
-			obj.user_clear()
-		for nodeGroup in bpy.data.node_groups:
-			bpy.data.node_groups.remove(nodeGroup)
-		for img in bpy.data.images:
-		    if not img.users:
-		        bpy.data.images.remove(img)
-
 	print("\033[96m__________________________________\nRE Mesh import started.\033[0m")
 	if options["importAllLODs"]:
 		lodTarget = None
@@ -1111,6 +1116,42 @@ def importREMeshFile(filePath,options):
 	meshParseEndTime = time.time()
 	meshParseTime =  meshParseEndTime - meshParseStartTime
 	print(f"Mesh parsing took {timeFormat%(meshParseTime * 1000)} ms.")
+	mdfPath = None
+	mdfFile = None
+	if options["loadMaterials"] or options["loadMDFData"]:
+		if options["mdfPath"] != "":
+			mdfPath = options["mdfPath"]
+		else:
+			mdfPath = findMDFPathFromMeshPath(filePath,gameName)
+			#print(mdfPath)
+		if mdfPath != None and not reMesh.materialNameRemapList and not parsedMesh.isMPLY:
+			try:
+				mdfFile = readMDF(mdfPath)
+			except Exception as err:
+				warningList.append("Could not read MDF material names from " + mdfPath + ": " + str(err))
+			if mdfFile != None and applyMDFMaterialNames(parsedMesh,mdfFile):
+				print("Mesh has no material remap list, using MDF material order.")
+	#Clear the scene only after the mesh file has been read and parsed so a failed read doesn't leave an emptied scene
+	if options["clearScene"]:
+		for collection in bpy.data.collections:
+			for obj in collection.objects:
+				collection.objects.unlink(obj)
+			bpy.data.collections.remove(collection)
+		for bpy_data_iter in (bpy.data.objects,bpy.data.meshes,bpy.data.lights,bpy.data.cameras):
+			for id_data in bpy_data_iter:
+				bpy_data_iter.remove(id_data)
+		for material in bpy.data.materials:
+			bpy.data.materials.remove(material)
+		for amt in bpy.data.armatures:
+			bpy.data.armatures.remove(amt)
+		for obj in bpy.data.objects:
+			bpy.data.objects.remove(obj)
+			obj.user_clear()
+		for nodeGroup in bpy.data.node_groups:
+			bpy.data.node_groups.remove(nodeGroup)
+		for img in bpy.data.images:
+		    if not img.users:
+		        bpy.data.images.remove(img)
 	armatureObj = None
 	parentCollection = None#Collection for grouping mesh and mdf
 	if options["createCollections"]:
@@ -1180,11 +1221,6 @@ def importREMeshFile(filePath,options):
 	meshOffsetDict.clear()
 	if options["loadMaterials"] or options["loadMDFData"]:
 		#print(filePath.split(".mesh")[1])
-		if options["mdfPath"] != "":
-			mdfPath = options["mdfPath"]
-		else:
-			mdfPath = findMDFPathFromMeshPath(filePath,gameName)
-			#print(mdfPath)
 		try:
 			if mdfPath != None:
 				split = splitNativesPath(mdfPath)
@@ -1203,7 +1239,8 @@ def importREMeshFile(filePath,options):
 				if options["loadMaterials"] and not options["importArmatureOnly"]:
 					if options["loadMDFData"]:
 						print("Loading Mesh Materials From MDF...")
-					mdfFile = readMDF(mdfPath)
+					if mdfFile == None:
+						mdfFile = readMDF(mdfPath)
 					importMDF(mdfFile,materialDict,options["loadUnusedTextures"],options["loadUnusedProps"],options["useBackfaceCulling"],options["reloadCachedTextures"],chunkPath = chunkPath,gameName = gameName,arrangeNodes = True)
 					
 					mdfImportEndTime = time.time()
@@ -1321,7 +1358,7 @@ def transferNormals(clone,mesh):
 
 def deleteClone(clone):
     objs = bpy.data.objects
-    objs.remove(objs[clone.name], do_unlink=True)	
+    objs.remove(clone, do_unlink=True)	
 
 def solveRepeatedUVs(selection):
 	context = bpy.context

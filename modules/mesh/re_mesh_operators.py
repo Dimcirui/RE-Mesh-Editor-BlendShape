@@ -52,9 +52,10 @@ class WM_OT_RenameMeshToREFormat(Operator):
 					try:
 						groupID = int(selectedObj.name.split("Group_")[1].split("_")[0])
 					except:
-						pass
+						print(f"Could not parse group ID in {selectedObj.name}, setting to 0")
+						groupID = 0
 				else:
-					print("Could not parse group ID in {selectedObj.name}, setting to 0")
+					print(f"Could not parse group ID in {selectedObj.name}, setting to 0")
 					groupID = 0
 				if groupID not in groupIndexDict:
 					groupIndexDict[groupID] = 0
@@ -85,6 +86,8 @@ class WM_OT_RemoveZeroWeightVertexGroups(Operator):
 		else:
 			selection = bpy.context.scene.objects
 		for obj in selection:
+			if obj.type != "MESH":
+				continue
 			emptyGroupList = []
 			for vertexGroup in obj.vertex_groups:
 				if not any(vertexGroup.index in [g.group for g in v.groups] for v in obj.data.vertices):

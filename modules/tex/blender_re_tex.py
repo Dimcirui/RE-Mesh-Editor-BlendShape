@@ -59,7 +59,7 @@ def loadTex(texPath,outputPath,texConv,reloadCachedTextures,useDDS):
 						try:
 							os.remove(newDDSPath)
 						except:
-							raiseWarning("Could not delete temporary dds file: {newDDSPath}")
+							raiseWarning(f"Could not delete temporary dds file: {newDDSPath}")
 			else:#Convert single image tex
 				if arrayMaxExceeded:
 					digitCount = max((2,len(str(texInfo["arrayNum"]))))
@@ -74,7 +74,7 @@ def loadTex(texPath,outputPath,texConv,reloadCachedTextures,useDDS):
 					try:
 						os.remove(ddsPath)
 					except:
-						raiseWarning("Could not delete temporary dds file: {ddsPath}")
+						raiseWarning(f"Could not delete temporary dds file: {ddsPath}")
 	return blenderImageList
 
 supportedImageExtensionsSet = set([".png",".tga",".tif"])#Not implemented yet
@@ -118,8 +118,12 @@ def convertTexDDSList (fileNameList,inDir,outDir,gameName,createStreamingTex = F
 		for ddsPath in ddsConversionList:
 			texPath = os.path.join(outDir,os.path.splitext(os.path.split(ddsPath)[1])[0])+f".tex.{str(texVersion)}"
 			print(str(texPath))
-			DDSToTex([ddsPath],texVersion,texPath,streamingFlag = False,gameName = gameName)#TODO Streaming
-			conversionCount += 1
+			try:
+				DDSToTex([ddsPath],texVersion,texPath,streamingFlag = False,gameName = gameName)#TODO Streaming
+				conversionCount += 1
+			except Exception as err:
+				print(f"Failed to convert {ddsPath} - {str(err)}")
+				failCount += 1
 		
 		
 		#Array Texture Conversion
@@ -128,8 +132,12 @@ def convertTexDDSList (fileNameList,inDir,outDir,gameName,createStreamingTex = F
 			#print(key)
 			#print(ddsPathList)
 			texPath = os.path.join(outDir,key+f".tex.{str(texVersion)}")
-			DDSToTex(ddsPathList,texVersion,texPath,streamingFlag = False,gameName = gameName)#TODO Streaming
-			conversionCount += 1
+			try:
+				DDSToTex(ddsPathList,texVersion,texPath,streamingFlag = False,gameName = gameName)#TODO Streaming
+				conversionCount += 1
+			except Exception as err:
+				print(f"Failed to convert {key} - {str(err)}")
+				failCount += 1
 	
 	ddsToPNGConversionList = []
 	if texConversionList != []:

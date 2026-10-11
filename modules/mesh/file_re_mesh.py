@@ -438,10 +438,10 @@ class MainMeshHeader():
 		self.lodGroupList = []
 		#padding align 16
 	def read(self,file,version,lodTarget = None):
-		self.lodGroupCount = read_byte(file)
-		self.materialCount = read_byte(file)
-		self.uvCount = read_byte(file)
-		self.skinWeightCount = read_byte(file)
+		self.lodGroupCount = read_ubyte(file)
+		self.materialCount = read_ubyte(file)
+		self.uvCount = read_ubyte(file)
+		self.skinWeightCount = read_ubyte(file)
 		self.totalMeshCount = read_ushort(file)
 		self.has32BitIndexBuffer = read_byte(file)
 		self.sharedLodBits = read_ubyte(file)
@@ -469,10 +469,10 @@ class MainMeshHeader():
 		file.seek(startPos)
 		file.seek(getPaddedPos(file.tell(), 16))
 	def write(self,file,version):
-		write_byte(file, self.lodGroupCount)
-		write_byte(file, self.materialCount)
-		write_byte(file, self.uvCount)
-		write_byte(file, self.skinWeightCount)
+		write_ubyte(file, self.lodGroupCount)
+		write_ubyte(file, self.materialCount)
+		write_ubyte(file, self.uvCount)
+		write_ubyte(file, self.skinWeightCount)
 		write_ushort(file, self.totalMeshCount)
 		write_byte(file, self.has32BitIndexBuffer)
 		write_ubyte(file, self.sharedLodBits)
@@ -506,10 +506,10 @@ class ShadowHeader():
 		self.lodGroupList = []
 		
 	def read(self,file,version):
-		self.lodGroupCount = read_byte(file)
-		self.materialCount = read_byte(file)
-		self.uvCount = read_byte(file)
-		self.skinWeightCount = read_byte(file)
+		self.lodGroupCount = read_ubyte(file)
+		self.materialCount = read_ubyte(file)
+		self.uvCount = read_ubyte(file)
+		self.skinWeightCount = read_ubyte(file)
 		self.totalMeshCount = read_uint(file)
 		if version < VERSION_RE8:
 			self.nullPadding = read_uint64(file)
@@ -539,10 +539,10 @@ class ShadowHeader():
 		file.seek(getPaddedPos(file.tell(), 16))
 	def write(self,file,version):
 		#print(file.tell())
-		write_byte(file, self.lodGroupCount)
-		write_byte(file, self.materialCount)
-		write_byte(file, self.uvCount)
-		write_byte(file, self.skinWeightCount)
+		write_ubyte(file, self.lodGroupCount)
+		write_ubyte(file, self.materialCount)
+		write_ubyte(file, self.uvCount)
+		write_ubyte(file, self.skinWeightCount)
 		write_uint(file, self.totalMeshCount)
 		if version < VERSION_RE8:
 			write_uint64(file, self.nullPadding)
@@ -1683,7 +1683,6 @@ class REMesh():
 						file.seek(currentPos)
 					if streamingBuffer == None:
 						raiseError("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.\n\nExample Mesh Path: natives\\STM\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606\nExample Streaming Mesh Path: natives\\STM\\streaming\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606")
-						raise Exception("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.")
 		if self.fileHeader.meshOffset:
 			file.seek(self.fileHeader.meshOffset)
 			self.meshBufferHeader = MeshBufferHeader()
@@ -1903,12 +1902,10 @@ def WriteToNorTanBufferOld(bufferStream,normalList,vertexPosList,uvList,faceList
 	bufferStream.write(norTanArray.tobytes())
 
 def WriteToUVBuffer(bufferStream,uvList):
-	uvArray = np.array(uvList,dtype = np.dtype("<e"))
-	uvArray = uvArray.flatten()
-	uvArray[1::2] *= -1
-	uvArray[1::2] += 1
-	#print(uvArray)
-	bufferStream.write(uvArray.tobytes())
+	#Flip V in full precision before packing to float16, arithmetic in float16 loses precision near V=1
+	uvArray = np.array(uvList,dtype = np.float64).flatten()
+	uvArray[1::2] = 1.0 - uvArray[1::2]
+	bufferStream.write(uvArray.astype(np.dtype("<e")).tobytes())
 
 def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
 	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,
@@ -2257,7 +2254,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						
 						#Add vertex color if it's missing and other meshes have it
 						if parsedMesh.bufferHasColor and parsedSubMesh.colorList is None:
-							parsedSubMesh.colorList = [(255,255,255,255)]*len(parsedSubMesh.vertexPosList)
+							parsedSubMesh.colorList = [(1.0,1.0,1.0,1.0)]*len(parsedSubMesh.vertexPosList)#WriteToColorBuffer multiplies by 255
 						
 						if parsedSubMesh.colorList is not None:
 							WriteToColorBuffer(colorBuffer,parsedSubMesh.colorList)
@@ -2648,7 +2645,6 @@ def readREMesh(filepath,lodTarget = None):
 	magic = read_uint(file)
 	if magic != 1213416781 and "streaming" in filepath:
 		raiseError("Attempted to import a streaming mesh file. Streaming mesh files cannot be imported directly.\nImport the mesh file that has same path and name that's not in the streaming folder.")
-		raise Exception("Streaming meshes can't be imported directly. Import the non streaming mesh instead.")
 	file.seek(0)
 	
 	if version >= VERSION_SF6:
@@ -2665,7 +2661,18 @@ def readREMesh(filepath,lodTarget = None):
 					streamFile.close()
 					print(f"Loaded {len(streamingBuffer)} bytes from streaming mesh at {streamingMeshPath}")
 				except:
-					raiseError("Failed to open " + filepath)
+					raiseError("Failed to open " + streamingMeshPath)
+		else:
+			#Fallback for loose folders: check for a sibling streaming directory
+			folder, name = os.path.split(filepath)
+			streamingMeshPath = os.path.join(folder,"streaming",name)
+			if os.path.isfile(streamingMeshPath):
+				try:
+					with open(streamingMeshPath,"rb") as streamFile:
+						streamingBuffer = streamFile.read()
+					print(f"Loaded {len(streamingBuffer)} bytes from loose streaming mesh at {streamingMeshPath}")
+				except:
+					raiseError("Failed to open " + streamingMeshPath)
 	if magic == 1498173517 and IMPORT_MPLY:#MPLY Mesh
 		reMeshFile = REMeshMPLY()
 		print("Loading MPLY mesh.")

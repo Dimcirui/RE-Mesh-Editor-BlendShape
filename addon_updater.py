@@ -612,6 +612,14 @@ class SingletonUpdater:
         else:
             self._tags = all_tags
 
+        # sort releases by version (newest first) after filtering
+        def tag_version(tag):
+            version = self.version_tuple_from_text(tag.get("name", ""))
+            return version if isinstance(version, tuple) else ()
+
+        if isinstance(self._tags, list):
+            self._tags.sort(key=tag_version, reverse=True)
+
         # get additional branches too, if needed, and place in front
         # Does NO checking here whether branch is valid
         if self._include_branches:

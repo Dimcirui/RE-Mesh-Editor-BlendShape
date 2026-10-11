@@ -83,12 +83,10 @@ def ReadNorTanBuffer(norTanBuffer,tags):
 
 def ReadUVBuffer(uvBuffer,tags):
 	#uvArray = np.frombuffer(uvBuffer,dtype="<2e",)
-	uvArray = np.frombuffer(bytearray(uvBuffer),dtype="<e",)#Convert bytes to bytearray to make numpy array mutable
-	#Do (1-x) to v value
-	uvArray[1::2] *= -1
-	uvArray[1::2] += 1
-	uvArray = uvArray.reshape((-1,2))
-	return uvArray.tolist()
+	#Decode half floats, then promote to float64 BEFORE flipping V (1-v), arithmetic in float16 destroys fine UV coordinates near V=0 or 1
+	uvArray = np.frombuffer(uvBuffer,dtype="<e").astype(np.float64)
+	uvArray[1::2] = 1.0 - uvArray[1::2]
+	return uvArray.reshape((-1,2)).tolist()
 
 def ReadWeightBuffer(weightBuffer,tags):
 	#weightArray = np.frombuffer(weightBuffer,dtype=f"<{stride//2}B")
@@ -150,14 +148,10 @@ def ReadCompressedPosBuffer(vertexPosBuffer,bitFlag,center,relOffset):
 	
 	if bitFlag.flags.use24BitPos:
 		#print("DEBUG 24 bit pos")
-		byte3Array = np.frombuffer(vertexPosBuffer,dtype="<3b")
-		posArray = np.zeros(len(byte3Array),np.dtype("<3f"))
-		posArray = byte3Array * (1.0/255)
-		
-		#posArray[:,0] = byte3Array[:,0] * (1.0/255)
-		#posArray[:,1] = byte3Array[:,1] * (1.0/255)
-		#posArray[:,2] = byte3Array[:,2] * (1.0/255)
-		posArray[:] = 0#TODO FIX 24 bit import
+		#8 bits per axis, unsigned and normalized to 0-1 like the 16 bit path (value / max)
+		byte3Array = np.frombuffer(vertexPosBuffer,dtype="<3B")
+		posArray = byte3Array.astype(dtype="f")
+		posArray /= 255.0
 	elif bitFlag.flags.use32BitPos:
 		#print("DEBUG 32 bit pos")
 		packedIntArray = np.frombuffer(vertexPosBuffer,dtype="<I")
@@ -170,9 +164,9 @@ def ReadCompressedPosBuffer(vertexPosBuffer,bitFlag,center,relOffset):
 		posArray[:,2] = ((packedIntArray >> 21) & 2047) / 2047
 		"""
 		#10-10-10 packing
-		posArray[:,0] = (packedIntArray & 1023)
-		posArray[:,1] = ((packedIntArray >> 10) & 1023)
-		posArray[:,2] = ((packedIntArray >> 20) & 1023)
+		posArray[:,0] = (packedIntArray & 1023) / 1023.0
+		posArray[:,1] = ((packedIntArray >> 10) & 1023) / 1023.0
+		posArray[:,2] = ((packedIntArray >> 20) & 1023) / 1023.0
 	else:
 		posArray = np.frombuffer(vertexPosBuffer,dtype="<3H")
 		posArray = posArray.astype(dtype="f")
@@ -1082,7 +1076,24 @@ class ParsedREMesh:
 		self.materialRemapList = reMesh.materialNameRemapList
 		#Parse Skeleton
 		for remapIndex in reMesh.materialNameRemapList:
-			self.materialNameList.append(reMesh.rawNameList[remapIndex])
+			if remapIndex < len(reMesh.rawNameList):
+				self.materialNameList.append(reMesh.rawNameList[remapIndex])
+			else:
+				self.materialNameList.append(f"INVALID_MATERIAL_{remapIndex}")
+
+		if not self.materialNameList and reMesh.lodHeader != None:
+			#No material remap list, fall back to raw name order
+			maxMaterialIndex = -1
+			for lodGroup in reMesh.lodHeader.lodGroupList:
+				for meshGroup in lodGroup.meshGroupList:
+					for meshInfo in meshGroup.vertexInfoList:
+						maxMaterialIndex = max(maxMaterialIndex, meshInfo.materialIndex)
+
+			for materialIndex in range(maxMaterialIndex + 1):
+				if materialIndex < len(reMesh.rawNameList):
+					self.materialNameList.append(reMesh.rawNameList[materialIndex])
+				else:
+					self.materialNameList.append(f"Material_{materialIndex:03d}")
 		if reMesh.skeletonHeader != None:
 			self.skeleton = Skeleton()
 			self.skeleton.weightedBones = []

@@ -8,7 +8,7 @@ from mathutils import Vector
 legacyUV2HairOcclusionList = set(["RE2","RE2RT","RE3","RE3RT","RE7RT","DMC5"])
 
 def addLoc(node,delta):#Just to shorten what would otherwise be a long line
-	return (node.location[0] + delta[0],node.location[1] + delta[0])
+	return (node.location[0] + delta[0],node.location[1] + delta[1])
 
 def getColorNodeGroup(nodeTree):#No RGBA node in shader editor so a custom group is needed
 	if "ColorNodeGroup" in bpy.data.node_groups:

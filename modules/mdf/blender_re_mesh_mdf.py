@@ -15,12 +15,11 @@ def getUsedTextureNodes(propFileList):
 	propSet = set()
 	path = os.path.split(__file__)[0]
 	for file in propFileList:
-		f = open(os.path.join(path,file),"r")
-		for line in f.readlines():
-			if "matInfo[\"textureNodeDict\"][\"" in line:
-				propName = line.split("matInfo[\"textureNodeDict\"][\"")[1].split("\"]",1)[0]
-				propSet.add(propName)
-		f.close()
+		with open(os.path.join(path,file),"r") as f:
+			for line in f.readlines():
+				if "matInfo[\"textureNodeDict\"][\"" in line:
+					propName = line.split("matInfo[\"textureNodeDict\"][\"")[1].split("\"]",1)[0]
+					propSet.add(propName)
 	return propSet
 try:
 	usedTextureSet = getUsedTextureNodes(
@@ -346,7 +345,7 @@ def findMDFPathFromMeshPath(meshPath,gameName = None):
 				if gameName == "MHWILDS":
 					
 					if not os.path.isfile(mdfPath) and fileName.startswith("ch"):
-						dirSplit = rootPath.split("Character",1)
+						dirSplit = re.split(r"character", rootPath, maxsplit=1, flags=re.IGNORECASE)
 						
 						if fileName.count("_") == 2 and len(dirSplit) == 2:#Some models use materials from other gender
 							isMale = "_000_" in fileName
@@ -357,7 +356,8 @@ def findMDFPathFromMeshPath(meshPath,gameName = None):
 							else:
 								newDir = dirSplit[1].replace("001","000",1)
 								newFileName = fileName.replace("_001_", "_000_")
-							mdfPath = os.path.join(dirSplit[0]+"Character"+newDir,f"{newFileName}.mdf2{mdfVersion}")
+							characterDirName = rootPath[len(dirSplit[0]):len(dirSplit[0])+len("character")]#Keep the original casing of the matched folder name
+							mdfPath = os.path.join(dirSplit[0]+characterDirName+newDir,f"{newFileName}.mdf2{mdfVersion}")
 					if not os.path.isfile(mdfPath) and fileName.startswith("mesh_") and "ui_mesh" in rootPath and fileName.count("_") == 3:
 						#Minimap textures
 						split = fileName.split("_")

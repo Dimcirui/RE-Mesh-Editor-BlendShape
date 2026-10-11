@@ -82,7 +82,7 @@ def operator_exists(idname):
 	try:
 		op_as_string(idname)
 		return True
-	except:
+	except Exception:
 		return False
 	
 #--------------------------------

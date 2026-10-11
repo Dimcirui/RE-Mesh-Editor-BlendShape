@@ -146,11 +146,8 @@ def setBit(bitFlag, index):
 def unsetBit(bitFlag, index):
     return bitFlag & ~(1 << index)
 def raiseError(error,errorCode = 999):
-     
-    try:
-        raise Exception()
-    except Exception:
-        print(textColors.FAIL + "ERROR: " + error + textColors.ENDC)
+    print(textColors.FAIL + "ERROR: " + error + textColors.ENDC)
+    raise Exception(error)
 
 def raiseWarning(warning):
      print(textColors.WARNING + "WARNING: " + warning + textColors.ENDC)
@@ -186,9 +183,13 @@ def getFolderSize(path='.'):
 			if entry.is_file():
 				total += entry.stat().st_size
 			elif entry.is_dir():
-				total += getFolderSize(entry.path)
-	except:
-		total = -1
+				childSize = getFolderSize(entry.path)
+				if childSize is None:
+					return None
+				total += childSize
+	except OSError as err:
+		print(f"Failed to get folder size for {path}: {err}")
+		return None
 	return total
 
 def formatByteSize(num, suffix="B"):

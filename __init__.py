@@ -242,8 +242,9 @@ def setModDirectoryFromFilePath(filePath):
 		try:
 			bpy.context.scene.re_mdf_toolpanel.modDirectory = splitNativesPath(filePath)[0]
 			print(f"Set mod directory to {bpy.context.scene.re_mdf_toolpanel.modDirectory}")
-		except:
-			print("ERROR: Failed to set mod directory, exported file path probably does not follow the chunk naming scheme.")
+		except Exception as err:
+			print(f"ERROR: Failed to set mod directory - {str(err)}")
+			print("Exported file path probably does not follow the chunk naming scheme.")
 class WM_OT_OpenTextureCacheFolder(Operator):
 	bl_label = "Open Texture Cache Folder"
 	bl_description = "Opens the texture cache folder in File Explorer"
@@ -252,8 +253,9 @@ class WM_OT_OpenTextureCacheFolder(Operator):
 	def execute(self, context):
 		try:
 			openFolder(bpy.path.abspath(bpy.context.preferences.addons[__name__].preferences.textureCachePath))
-		except:
-			pass
+		except Exception as err:
+			print(f"WARNING: Failed to open texture cache folder - {str(err)}")
+			self.report({"WARNING"},f"Could not open folder: {str(err)}")
 		checkTextureCacheSize()
 		return {'FINISHED'}
 
@@ -350,10 +352,13 @@ class RemoveItemOperator(bpy.types.Operator):
 
 	def execute(self, context):
 		
-		chunkList = bpy.context.preferences.addons[__name__].preferences.chunkPathList_items
-		index = bpy.context.preferences.addons[__name__].preferences.chunkPathList_index
+		prefs = bpy.context.preferences.addons[__name__].preferences
+		chunkList = prefs.chunkPathList_items
+		if len(chunkList) == 0:
+			return {'CANCELLED'}
+		index = min(max(0, prefs.chunkPathList_index), len(chunkList) - 1)
 		chunkList.remove(index)
-		bpy.context.preferences.addons[__name__].preferences.chunkPathList_index = min(max(0, index - 1), len(chunkList) - 1)
+		prefs.chunkPathList_index = min(max(0, index - 1), len(chunkList) - 1)
 		return {'FINISHED'}
 
 # Operator to reorder items in the list
@@ -374,12 +379,16 @@ class ReorderItemOperator(bpy.types.Operator):
 		bpy.context.preferences.addons[__name__].preferences.chunkPathList_index = max(0,min(new_index,list_length))
 		
 	def execute(self, context):
-		chunkList = bpy.context.preferences.addons[__name__].preferences.chunkPathList_items
-		index = bpy.context.preferences.addons[__name__].preferences.chunkPathList_index
-		
+		prefs = bpy.context.preferences.addons[__name__].preferences
+		chunkList = prefs.chunkPathList_items
+		if len(chunkList) < 2:
+			return {'CANCELLED'}
+		index = min(max(0, prefs.chunkPathList_index), len(chunkList) - 1)
 		neighbor = index + (-1 if self.direction == 'UP' else 1)
-		chunkList.move(neighbor, index)
-		self.move_index()
+		if neighbor < 0 or neighbor >= len(chunkList):
+			return {'CANCELLED'}
+		chunkList.move(index, neighbor)
+		prefs.chunkPathList_index = neighbor
 		return {'FINISHED'}
 
 class MESH_UL_ChunkPathList(bpy.types.UIList):
@@ -389,11 +398,16 @@ class MESH_UL_ChunkPathList(bpy.types.UIList):
 
 def checkTextureCacheSize():
 	try:
-		bpy.context.preferences.addons[__name__].preferences.textureCacheSizeString = formatByteSize(getFolderSize(bpy.path.abspath(bpy.context.preferences.addons[__name__].preferences.textureCachePath)))
+		prefs = bpy.context.preferences.addons[__name__].preferences
+		size = getFolderSize(bpy.path.abspath(prefs.textureCachePath))
+		if size is None:
+			prefs.textureCacheSizeString = "Unavailable"
+		else:
+			prefs.textureCacheSizeString = formatByteSize(size)
 		timestamp = str(datetime.now()).split(".")[0]
-		bpy.context.preferences.addons[__name__].preferences.textureCacheCheckDate = timestamp
-	except:
-		pass
+		prefs.textureCacheCheckDate = timestamp
+	except Exception as err:
+		print(f"Failed to check texture cache size - {str(err)}")
 	
 class REMeshPreferences(AddonPreferences):
 	bl_idname = __name__
