@@ -10,6 +10,7 @@ VERSION_ONIWOTS = 260209350
 VERSION_PRAGDEMO = 250925211
 VERSION_RE9 = 250925211
 VERSION_RE4 = 221108797
+VERSION_MHRSB = 2109148288
 
 BLEND_SHAPE_MESH_VERSIONS = frozenset((
 	VERSION_MHWILDS_BETA,
@@ -26,6 +27,12 @@ RE9_BLEND_SHAPE_MESH_VERSIONS = frozenset((
 	VERSION_RE9,
 	VERSION_ONIWOTS,
 ))
+# MH Rise: one target per LOD body over a contiguous LOD-local vertex range.
+# Body typing 0 = 4-byte packed 11/10/11 rows, 1 = 8-byte float16 rows; a
+# 4-byte int8 shape normal follows each row when normalRecalcOffset is 0.
+MHRSB_BLEND_SHAPE_MESH_VERSIONS = frozenset((
+	VERSION_MHRSB,
+))
 
 
 def _mesh_supports_blend_shapes(reMesh):
@@ -34,7 +41,79 @@ def _mesh_supports_blend_shapes(reMesh):
 		meshVersion in BLEND_SHAPE_MESH_VERSIONS
 		or meshVersion in RE4_BLEND_SHAPE_MESH_VERSIONS
 		or meshVersion in RE9_BLEND_SHAPE_MESH_VERSIONS
+		or meshVersion in MHRSB_BLEND_SHAPE_MESH_VERSIONS
 	)
+
+
+def MHRSBBlendRowBytes(blendData, keepsNormals):
+	"""Bytes per MH Rise payload row for one body."""
+	positionBytes = 8 if int(getattr(blendData, "typing", 0) or 0) == 1 else 4
+	return positionBytes + (4 if keepsNormals else 0)
+
+
+def _parseMHRSBBlendShapes(reMesh, lodIndex, lodGroup, buffer, scatterDeltas):
+	"""Decode MH Rise body lodIndex and scatter its channels.
+
+	Bodies are stored back to back in LOD order, each shape-major: channel c
+	holds vertCount rows for the LOD-local range starting at the target's
+	subMeshVertexStartIndex.
+	"""
+	bodies = reMesh.blendShapeHeader.blendShapeList
+	keepsNormals = int(reMesh.fileHeader.normalRecalcOffset or 0) == 0
+	offset = 0
+	for body in bodies[:lodIndex]:
+		rowBytes = MHRSBBlendRowBytes(body, keepsNormals)
+		for target in body.blendTargetList[:int(body.targetCount)]:
+			offset += int(target.vertCount) * int(target.blendShapeNum) * rowBytes
+	blendData = bodies[lodIndex]
+	rowBytes = MHRSBBlendRowBytes(blendData, keepsNormals)
+	lodBase = min(
+		(
+			int(meshInfo.vertexStartIndex)
+			for meshGroup in lodGroup.meshGroupList
+			for meshInfo in meshGroup.vertexInfoList
+		),
+		default=0,
+	)
+	for targetIndex, target in enumerate(
+		blendData.blendTargetList[:int(blendData.targetCount)]
+	):
+		vertCount = int(target.vertCount)
+		channelCount = int(target.blendShapeNum)
+		size = vertCount * channelCount * rowBytes
+		rows = np.frombuffer(
+			bytes(buffer[offset:offset + size]), dtype=np.uint8
+		)
+		offset += size
+		if len(rows) != size:
+			print(
+				f"MH Rise blend body {lodIndex}: payload is {size - len(rows)} "
+				"bytes short, its shape keys are skipped"
+			)
+			return
+		rows = rows.reshape((vertCount * channelCount, rowBytes))
+		if int(blendData.typing) == 1:
+			decoded = ReadBlendShapeRE4Buffer(rows[:, :8].tobytes(), set())
+		else:
+			decoded = ApplyBlendShapeAABBToDecodedRows(
+				ReadBlendShapeType7Buffer(rows[:, :4].tobytes(), set()),
+				blendData.aabbList[targetIndex],
+				blendData.typing,
+				True,
+			)
+		for channelIndex in range(channelCount):
+			remapIndex = int(target.blendSSIndex) + channelIndex
+			if remapIndex >= len(reMesh.blendShapeNameRemapList):
+				continue
+			rawNameIndex = reMesh.blendShapeNameRemapList[remapIndex]
+			if rawNameIndex >= len(reMesh.rawNameList):
+				continue
+			scatterDeltas(
+				None,
+				reMesh.rawNameList[rawNameIndex],
+				lodBase + int(target.subMeshVertexStartIndex),
+				decoded[channelIndex * vertCount:(channelIndex + 1) * vertCount].copy(),
+			)
 
 
 SIX_WEIGHT_MESH_VERSIONS = frozenset([
@@ -510,7 +589,11 @@ def _parseLODStructureWithBlendShapes(
 			# scaled by the target AABB.
 			isRE4 = int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
 			is888 = int(getattr(blendData, "padding1", 0) or 0) == 3
-			if isRE4:
+			isMHRSB = int(reMesh.meshVersion) in MHRSB_BLEND_SHAPE_MESH_VERSIONS
+			if isMHRSB:
+				# Decoded per body by _parseMHRSBBlendShapes below.
+				reader = None
+			elif isRE4:
 				reader = ReadBlendShapeRE4Buffer
 			elif is888:
 				reader = ReadBlendShape888Buffer
@@ -557,7 +640,7 @@ def _parseLODStructureWithBlendShapes(
 			# Wilds no-recalc meshes (normalRecalcOffset == 0) and bodies with
 			# padding1 == 1 store 8 bytes per vertex: [position delta, second row].
 			# vertOffset counts vertices, so keep only the position rows.
-			if not isRE4 and (
+			if not isRE4 and not isMHRSB and (
 				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
 				or int(getattr(blendData, "padding1", 0) or 0) == 1
 			):
@@ -669,6 +752,11 @@ def _parseLODStructureWithBlendShapes(
 					full[vertex - start:vertex - start + take] = deltas[done:done + take]
 					done += take
 
+			if isMHRSB:
+				_parseMHRSBBlendShapes(
+					reMesh, lodIndex, lodGroup, buffer, scatterDeltas
+				)
+				activeCount = 0
 			payloadCursor = 0
 			for targetIndex, target in enumerate(targets[:activeCount]):
 				entries = list(
@@ -1204,8 +1292,12 @@ class ParsedREMesh:
 						lastElement.posStartOffset
 						+ vertexCount * lastElement.stride
 					)
-					if reMesh.meshVersion in RE4_BLEND_SHAPE_MESH_VERSIONS:
-						# RE4 keeps the payload start in the two shorts at +44.
+					if (
+						reMesh.meshVersion in RE4_BLEND_SHAPE_MESH_VERSIONS
+						or reMesh.meshVersion in MHRSB_BLEND_SHAPE_MESH_VERSIONS
+					):
+						# RE4 and MH Rise keep the payload start in the
+						# vertexElementSize / unkn1 shorts.
 						headerStart = (
 							(int(reMesh.meshBufferHeader.vertexElementSize) & 0xFFFF)
 							| ((int(reMesh.meshBufferHeader.unkn1) & 0xFFFF) << 16)

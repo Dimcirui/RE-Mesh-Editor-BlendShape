@@ -183,6 +183,37 @@ def main():
 			assert [key.blendShapeName for key in oni_submesh.blendShapeList] == ["Move"]
 			assert np.allclose(oni_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
 		print("PASS Onimusha WotS modes 1/KEEPNORMALS export and reimport shape keys", flush=True)
+
+		# MH Rise: pre-SF6 target over the whole submesh, every channel kept
+		# (an empty one too), packed rows (+ normal words without recalculation)
+		still = obj.shape_key_add(name="Still", from_mix=False)
+		for mode in (1, -1):
+			rise_output = Path(temporary) / ("rise-mode" + str(mode) + ".mesh.2109148288")
+			assert mesh_io.exportREMeshFile(str(rise_output), dict(
+				options, exportBlendShapes=True, blendShapeExportMode=mode))
+			rise = codec.readREMesh(str(rise_output))
+			body = rise.blendShapeHeader.blendShapeList[0]
+			target = body.blendTargetList[0]
+			assert (body.targetCount, body.typing, list(body.blendS), list(body.blendSSList)) == (1, 0, [-1, 0, 0], [-1, -1])
+			assert (target.subMeshVertexStartIndex, target.vertCount, target.blendShapeNum) == (0, 6, 2)
+			header = rise.meshBufferHeader
+			start = (header.vertexElementSize & 0xFFFF) | ((header.unkn1 & 0xFFFF) << 16)
+			row_words = 1 if mode == 1 else 2
+			assert len(header.vertexBuffer) - start >= 2 * 6 * 4 * row_words
+			words = np.frombuffer(bytes(header.vertexBuffer[start:start + 2 * 6 * 4 * row_words]), "<u4").reshape(2, 6, row_words)
+			assert (words[1, :, 0] == 0x7FEFFBFF).all()
+			if mode == 1:
+				recalc = rise.fileHeader.normalRecalcOffset
+				assert recalc + 48 + 32 + 32 == rise.fileHeader.blendShapesOffset
+			else:
+				assert rise.fileHeader.normalRecalcOffset == 0 and words[0, :, 1].any()
+			rise_parsed = parse.ParsedREMesh()
+			rise_parsed.ParseREMesh(rise, {"importBlendShapes": True})
+			rise_submesh = rise_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0]
+			assert [key.blendShapeName for key in rise_submesh.blendShapeList] == ["Move", "Still"]
+			assert np.allclose(rise_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
+		obj.shape_key_remove(still)
+		print("PASS MH Rise modes 1/KEEPNORMALS export whole-submesh targets, keep empty channels and reimport", flush=True)
 	assert [tuple(vertex.co) for vertex in data.vertices] == before
 	assert len(data.vertices) == 4 and len(data.polygons) == 2
 	print("PASS corner export retains UV and custom normal seams without modifying source mesh", flush=True)

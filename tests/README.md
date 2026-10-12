@@ -24,7 +24,8 @@ normalization, the Wilds normal-group byte mapping and game version tables.
   and custom-normal seams kept by corner splitting, Wilds shape key export
   (Recalculate Normals and KEEPNORMALS modes, `DUMMY_` keys skipped), RE4
   shape key export (float16 rows, LOD0 normal-recalc tables, reimport),
-  Onimusha WotS shape key export (Recalculate Normals and KEEPNORMALS), shape
+  Onimusha WotS shape key export (Recalculate Normals and KEEPNORMALS), MH Rise
+  shape key export (both modes, empty channels kept), shape
   key names longer than Blender's 63 bytes kept through import and export.
 - `test_export_reliability_blender.py`: export cleanup on success and failure,
   atomic writes, operator failure reports, multi-file import, batch export

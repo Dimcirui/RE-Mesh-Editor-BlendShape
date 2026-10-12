@@ -61,9 +61,11 @@ VERSION_ONIWOTS = 138#file:260209350,internal:250203152
 VERSION_RE9 = 140#file:250925211,internal:250707828#RE9 Placeholder
 VERSION_DD2_TU3_2 = 145#file:260421070,internal:251205828
 
-# RE9 and Onimusha WotS are read only (Wilds-style rows and tables); export
-# is Wilds and RE4.
+# RE9 is read only (Wilds-style rows and tables); export is Wilds, Onimusha
+# WotS, RE4 and MH Rise. MH Rise uses the pre-SF6 target record (one
+# contiguous vertex range per target).
 BLEND_SHAPE_VERSIONS = frozenset((
+	VERSION_MHRSB,
 	VERSION_MHWILDS,
 	VERSION_RE4,
 	VERSION_RE9,
@@ -1776,6 +1778,10 @@ class REMesh():
 			file.write(re4NormalRecalc)
 
 		if self.fileHeader.blendShapesOffset:
+			# The header is 16-byte aligned; with no skeleton or tables before
+			# it (MH Rise keep-normals) the LOD headers can end 8 bytes short.
+			if getPaddedPos(file.tell(), 16) == self.fileHeader.blendShapesOffset:
+				file.seek(self.fileHeader.blendShapesOffset)
 			if self.fileHeader.blendShapesOffset != file.tell():
 				print(f"ERROR IN OFFSET CALCULATION - blendShapesOffset - expected {self.fileHeader.blendShapesOffset}, actual {file.tell()}")
 			self.blendShapeHeader.write(file,version)
@@ -2477,6 +2483,25 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 				reMesh.blendShapeHeader, currentOffset, version
 			)
 			reMesh._blendShapeExportPlan = blendShapePlan
+	elif version == VERSION_MHRSB:
+		from .mhrsb_blendshape import (
+			build_mhrsb_blend_shape_plan,
+			reserve_mhrsb_normal_recalc,
+		)
+		blendShapePlan = build_mhrsb_blend_shape_plan(
+			parsedMesh, parsedSubMeshToSubMeshDataDict
+		)
+		if blendShapePlan is not None:
+			from .mhwilds_blendshape import relocate_blend_shape_header
+			currentOffset = reserve_mhrsb_normal_recalc(
+				reMesh, currentOffset, blendShapePlan
+			)
+			reMesh.fileHeader.blendShapesOffset = currentOffset
+			reMesh.blendShapeHeader = blendShapePlan["header"]
+			currentOffset = relocate_blend_shape_header(
+				reMesh.blendShapeHeader, currentOffset, version
+			)
+			reMesh._blendShapeExportPlan = blendShapePlan
 	#Name lists and remaps
 	currentNameIndex = 0
 	for index,materialName in enumerate(parsedMesh.materialNameList):
@@ -2591,8 +2616,8 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 		reMesh.meshBufferHeader.vertexElementList.append(vertexElement)
 		reMesh.meshBufferHeader.vertexBuffer.extend(extraWeightBuffer.getvalue())
 		
-	# RE4 blend rows follow the vertex elements in the same buffer.
-	if version == VERSION_RE4 and blendShapePlan is not None:
+	# RE4 and MH Rise blend rows follow the vertex elements in the same buffer.
+	if version in (VERSION_RE4, VERSION_MHRSB) and blendShapePlan is not None:
 		padding = getPaddingAmount(currentBufferOffset, 16)
 		reMesh.meshBufferHeader.vertexBuffer.extend(b"\x00" * padding)
 		currentBufferOffset += padding
@@ -2678,6 +2703,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	if version == VERSION_RE4 and blendShapePlan is not None:
 		from .re4_blendshape import finalize_re4_export
 		finalize_re4_export(reMesh)
+	if version == VERSION_MHRSB and blendShapePlan is not None:
+		from .mhrsb_blendshape import finalize_mhrsb_export
+		finalize_mhrsb_export(reMesh, blendShapePlan)
 	return reMesh
 #---RE MESH IO FUNCTIONS---#
 

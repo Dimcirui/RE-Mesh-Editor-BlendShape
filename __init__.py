@@ -19,10 +19,13 @@ bl_info = {
 # shapeKeyExportMode except NO (RE4 has a single layout).
 # oniwots_blendshape_export: Onimusha WotS (.260209350) exportfile takes the Wilds
 # modes (NO / MODE1 / KEEPNORMALS).
+# mhrise_blendshape_export: MH Rise (.2109148288) exportfile takes NO / MODE1 /
+# KEEPNORMALS (MODE0 exports as MODE1).
 REME_FEATURES = {
 	"wilds_blendshape_export": 1,
 	"re4_blendshape_export": 1,
 	"oniwots_blendshape_export": 1,
+	"mhrise_blendshape_export": 1,
 }
 
 import bpy
@@ -1219,13 +1222,15 @@ class ExportREMesh(Operator, ExportHelper):
 		limitRow.prop(self,"limitTotalCount", text="Max Weights")
 		row5 = layout.row()
 		row5.prop(self,"normalizeWeights")
-		if self.filename_ext in (".241111606", ".221108797", ".260209350"):
+		if self.filename_ext in (".241111606", ".221108797", ".260209350", ".2109148288"):
 					row = layout.row()
 					split = row.split(factor=0.48)
 					split.label(text="Export Shapekeys?")
 					split.prop(self, "shapeKeyExportMode", text="")
 					if self.filename_ext == ".221108797":
 						layout.label(text="RE4: one layout, any choice except No exports", icon="INFO")
+					elif self.filename_ext == ".2109148288" and self.shapeKeyExportMode == "MODE0":
+						layout.label(text="MH Rise: exported as Recalculate Normals", icon="INFO")
 
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
@@ -1241,13 +1246,17 @@ class ExportREMesh(Operator, ExportHelper):
 			return{"CANCELLED"}
 
 		# Blendshape export is implemented for Monster Hunter Wilds, Onimusha WotS
-		# (same modes) and RE4.
+		# (same modes), MH Rise (Recalculate / Keep Normals) and RE4.
 		# Keep the UI/property vocabulary generic so other game handlers can be
 		# added later without renaming the shared export plumbing.
 		shapeKeyExportSelection = self.shapeKeyExportMode
 		if meshVersion in (241111606, 260209350):
 			exportBlendShapes = shapeKeyExportSelection != "NO"
 			blendShapeExportMode = {"MODE0": 0, "KEEPNORMALS": -1}.get(shapeKeyExportSelection, 1)
+		elif meshVersion == 2109148288:
+			# MH Rise: normal-recalc tables or per-row shape normals; no mode 0.
+			exportBlendShapes = shapeKeyExportSelection != "NO"
+			blendShapeExportMode = -1 if shapeKeyExportSelection == "KEEPNORMALS" else 1
 		elif meshVersion == 221108797:
 			# RE4 has a single blendshape layout; the Wilds modes do not apply.
 			exportBlendShapes = shapeKeyExportSelection != "NO"

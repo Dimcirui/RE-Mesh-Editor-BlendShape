@@ -1,7 +1,7 @@
 # RE-Mesh-Editor-BlendShape
 
 A Blender add-on for importing and exporting RE Engine mesh and mdf2 files, focused on
-**blendshape (shape key) support** for Monster Hunter Wilds, Resident Evil and Onimusha: Way of the Sword.
+**blendshape (shape key) support** for Monster Hunter Wilds, Monster Hunter Rise, Resident Evil and Onimusha: Way of the Sword.
 
 > **AI-assisted project.** Most of the code and the file-format research in this fork were
 > written with the help of an AI coding assistant (Anthropic's Claude), and reviewed, tested and
@@ -31,6 +31,7 @@ feature list, documentation and credits.
 | Game | Import | Export | Notes |
 |---|---|---|---|
 | Monster Hunter Wilds | yes | yes | Reworked exporter. Modes: *Recalculate Normals* and *Keep Custom Normals*. Tested in game. |
+| Monster Hunter Rise: Sunbreak | yes | yes | Hair helmet-fit shapes, character-creator face. Same two modes; every channel is kept in order, empty ones too. Not yet tested in game. |
 | Resident Evil 4 | yes | yes | Layout matches vanilla faces (float16 rows, LOD0 normal tables). Not yet tested in game. |
 | Onimusha: Way of the Sword | yes | yes | Same modes as Wilds; imports the 3-byte rows used by most vanilla meshes. Not yet tested in game. |
 | Resident Evil Requiem (RE9) | yes | no | |
