@@ -1,44 +1,66 @@
-This fork aims to fix various mesh issues as of v0.66 from the main repository.<br>
-**What's mainly changed?**<br>
-1. Custom weights are now more accurate. There is a hard limitation for the precision of weights that can be stored in the mesh format. However, with this they are handled a bit differently to get closer to the original weight. Note, that I intentionally used the words 'custom weights', as vanilla mesh weights should already be packed in a format that keeps weights 1:1 between import/export.<br>
-Cube test example with custom weights for each group:<br>
-Before Export:<br>
-0.165, 0.207, 0.092, 0.194, 0.191, 0.150<br>
-After Export (v0.66, original)<br>
-0.165, 0.204, 0.094, 0.196, 0.192, 0.149 Total precision loss: 0.009<br>
-After Export (v0.67, forked meshfix)<br>
-0.165, 0.208, 0.090, 0.196, 0.192, 0.149 Total precision loss: 0.007<br>
-(Note; for this example I just used blender's display of to the nearst thousandth rather than the entire float)<br>
+# RE-Mesh-Editor-BlendShape
 
-2. Exported normals (and other various data) can be fully preserved<br>
-The option 'Split Vertices For Corner Attributes' has been added for this. You can disable to use the 'legacy' behavior.
-<img width="2322" height="1259" alt="Desktop Screenshot 2026 06 10 - 18 06 32 582" src="https://github.com/user-attachments/assets/1a7b4e5e-c8c7-4009-a2cc-cf800cdd489d" />
+A Blender add-on for importing and exporting RE Engine mesh and mdf2 files, focused on
+**blendshape (shape key) support** for Monster Hunter Wilds, Resident Evil and Onimusha: Way of the Sword.
 
-3. Exported Weights Have the Option to Not be Forced Into Normalization<br>
-The checkbox for export 'Normalize Weights' has been added. The reason for this is because some vanilla meshes actually are not fully normalized. So their weight was not able to be preserved 1:1 after export (or if you are trying to export something that matches the weight). Example being Grace from RE9's head mesh. There are weights around the neck seam near the shoulder area that are not fully normalized, and could not be exported with those weights unchanged.
+> **AI-assisted project.** Most of the code and the file-format research in this fork were
+> written with the help of an AI coding assistant (Anthropic's Claude), and reviewed, tested and
+> directed by the maintainer. Format conclusions are checked against vanilla game files, but please
+> report anything that looks wrong.
 
-4. Fixed DD2 Secondary Weight Issue<br>
-<img width="2838" height="1445" alt="DD2" src="https://github.com/user-attachments/assets/9004eced-9f12-4b41-b0db-fe7037be26e2" />
+## Lineage
 
-5. Support for MHWs blendshapes
+This repository is a fork of a fork:
 
-6. Support for Onimusha: WoTS meshes
+1. **[RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor)** by **NSA Cloud**: the original
+   add-on (mesh, mdf2, tex, chain and other RE Engine formats). Development there has ended.
+2. **[RE-Mesh-Editor-MeshFixes](https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes)** by **Ridog8**:
+   the direct upstream. It improves custom weight precision, adds corner-attribute vertex splitting
+   so exported normals are preserved, optional weight normalization, DD2 secondary weight and
+   TU 3.2 fixes, extended weight packing (Wilds / Onimusha), and the first MH Wilds blendshape and
+   Onimusha mesh support.
+3. **RE-Mesh-Editor-BlendShape** (this repository), by **Dimcirui**.
 
-7. Added new user configuration and export settings
+All credit for the add-on itself goes to NSA Cloud and Ridog8; see their repositories for the full
+feature list, documentation and credits.
 
-8. Sped up some functions such as bone index packing
+## What this fork changes
 
-9. Extended weights packed closer to vanilla structure (only Wilds + Oni:WoTS at the time of writing this)
+**Blendshapes (shape keys)**
 
-10. Added DD2 TU 3.2 support and fixed wrong weight total calculation for DD2 meshes.
+| Game | Import | Export | Notes |
+|---|---|---|---|
+| Monster Hunter Wilds | yes | yes | Reworked exporter. Modes: *Recalculate Normals* and *Keep Custom Normals*. Tested in game. |
+| Resident Evil 4 | yes | yes | Layout matches vanilla faces (float16 rows, LOD0 normal tables). Not yet tested in game. |
+| Onimusha: Way of the Sword | yes | yes | Same modes as Wilds; imports the 3-byte rows used by most vanilla meshes. Not yet tested in game. |
+| Resident Evil Requiem (RE9) | yes | no | |
 
-##
-For additional help, go here:
-[Modding World Discord Server](https://discord.gg/yA969DHdxM)
-## Credits Specific to this fork
-[HeartBee.](https://github.com/StellarBladeModding) - For helping test extended weight packing.
+- Shape key names longer than Blender's 63-byte limit keep their full game name through import
+  and export (game constraints bind channels by name).
+- Which shape keys are exported:
+  - unchecked (muted) keys are not exported;
+  - locked keys are applied to the exported mesh at their current value and are not exported as
+    shape keys;
+  - keys whose name starts with `DUMMY_` are not exported (use them for previews).
 
+**Other changes**
 
-########### Original Repository ###################
+- Onimusha: Way of the Sword mdf2 / tex support.
+- Fixes ported from the [TrueShadow01](https://github.com/TrueShadow01/REME-RE-Engine-Blender-Addon)
+  and [ZZtaii](https://github.com/ZZtaii/RE-Mesh-Editor) forks: atomic mesh writes and cleanup of
+  temporary export objects, UV validation, a progress display, *Preserve Original Material Table*,
+  and a test harness (`tests/`).
+- Vertices without a usable bone weight are bound to the first weighted bone again (with a warning)
+  instead of losing their skinning.
+- `REME_FEATURES` in `__init__.py` lets other add-ons detect what this version supports.
+- The built-in updater checks this repository.
 
-[RE-Mesh-Editor](https://github.com/NSACloud/RE-Mesh-Editor)
+## Installation
+
+Download the repository as a zip (*Code > Download ZIP*) and install it in Blender via
+*Edit > Preferences > Add-ons > Install from Disk*. Disable other RE Mesh Editor versions first:
+they register the same operators.
+
+## License
+
+GPL, as the upstream projects (see `LICENSE.GPL`).
