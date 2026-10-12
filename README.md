@@ -30,23 +30,24 @@ feature list, documentation and credits.
 
 | Game | Import | Export | Notes |
 |---|---|---|---|
-| Monster Hunter Wilds | yes | yes | Reworked exporter. Modes: *Recalculate Normals* and *Keep Custom Normals*. Tested in game. |
-| Monster Hunter Rise: Sunbreak | yes | yes | Hair helmet-fit shapes, character-creator face. Same two modes; every channel is kept in order, empty ones too. Not yet tested in game. |
-| Resident Evil 4 | yes | yes | Layout matches vanilla faces (float16 rows, LOD0 normal tables). Not yet tested in game. |
-| Onimusha: Way of the Sword | yes | yes | Same modes as Wilds; imports the 3-byte rows used by most vanilla meshes. Not yet tested in game. |
+| Monster Hunter Wilds | yes | yes |  |
+| Monster Hunter Rise: Sunbreak | yes | yes | Not yet tested in game. |
+| Resident Evil 4 Remake | yes | yes | Not yet tested in game. |
+| Onimusha: Way of the Sword | yes | yes | Not yet tested in game. |
 | Resident Evil Requiem (RE9) | yes | no | |
 
 - Shape key names longer than Blender's 63-byte limit keep their full game name through import
   and export (game constraints bind channels by name).
 - Which shape keys are exported:
-  - unchecked (muted) keys are not exported;
-  - locked keys are applied to the exported mesh at their current value and are not exported as
+  - **unchecked** (muted) keys are not exported;
+  - **locked** keys are applied to the exported mesh at their current value and are not exported as
     shape keys;
-  - keys whose name starts with `DUMMY_` are not exported (use them for previews).
+  - keys whose name starts with `DUMMY_` are also not exported (use them for previews).
 
 **Other changes**
 
 - Onimusha: Way of the Sword mdf2 / tex support.
+- Faster export: vertex colors and UV layers are read in one pass instead of per corner
 - Fixes ported from the [TrueShadow01](https://github.com/TrueShadow01/REME-RE-Engine-Blender-Addon)
   and [ZZtaii](https://github.com/ZZtaii/RE-Mesh-Editor) forks: atomic mesh writes and cleanup of
   temporary export objects, UV validation, a progress display, *Preserve Original Material Table*,

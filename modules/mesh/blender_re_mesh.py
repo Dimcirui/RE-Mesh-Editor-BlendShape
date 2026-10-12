@@ -2019,7 +2019,24 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		
 		
 		#Build remap dict once all objects of the first lod are looped through
-		
+
+		if isFirstLOD:
+			#The remap table is shared by every LOD, but later LODs can weight bones LOD0 never uses
+			#(vanilla MH Rise hair and monster LOD1+ do), so add their groups before building it
+			armatureBoneDict = armatureObj.data.bones if armatureObj != None else dict()
+			for laterLOD in meshLODCollectionList[1:]:
+				for obj in laterLOD.objects:
+					if obj.type != "MESH" or obj.get("MeshExportExclude"):
+						continue
+					if options["selectedOnly"] and obj not in bpy.context.selected_objects:
+						continue
+					usedGroupIndices = {g.group for v in obj.data.vertices for g in v.groups}
+					for vg in obj.vertex_groups:
+						vgName = vg.name.removeprefix("SHAPEKEY_")
+						if vg.index in usedGroupIndices and vgName in armatureBoneDict:
+							weightedBonesSet.add(vgName)
+						else:
+							remapDict.setdefault(vgName, 0)
 		if isFirstLOD and armatureObj != None:
 			remapIndex = 0
 			for bone in armatureObj.data.bones:
