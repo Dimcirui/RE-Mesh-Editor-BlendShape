@@ -61,9 +61,13 @@ VERSION_ONIWOTS = 138#file:260209350,internal:250203152
 VERSION_RE9 = 140#file:250925211,internal:250707828#RE9 Placeholder
 VERSION_DD2_TU3_2 = 145#file:260421070,internal:251205828
 
+# RE9 and Onimusha WotS are read only (Wilds-style rows and tables); export
+# is Wilds and RE4.
 BLEND_SHAPE_VERSIONS = frozenset((
 	VERSION_MHWILDS,
 	VERSION_RE4,
+	VERSION_RE9,
+	VERSION_ONIWOTS,
 ))
 
 SIX_WEIGHT_GAMES = frozenset([
@@ -1343,7 +1347,7 @@ class BlendShapeData():
 		self.blendSSOffset = read_uint64(file)
 		serializedTargetCount = int(self.targetCount)
 		# typing counts the inactive targets that follow the active ones.
-		if version in (VERSION_MHWILDS, VERSION_RE4):
+		if version in (VERSION_MHWILDS, VERSION_RE4, VERSION_RE9, VERSION_ONIWOTS):
 			serializedTargetCount += int(self.typing)
 		file.seek(self.dataOffset)
 		for i in range(0,serializedTargetCount):

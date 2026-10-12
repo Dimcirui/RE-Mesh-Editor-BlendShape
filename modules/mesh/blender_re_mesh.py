@@ -133,6 +133,8 @@ def normalizeVec(vec):
     return Vector(vec).normalized()
 
 BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4"))
+# RE9 and Onimusha WotS blend shapes are imported only; export is not implemented yet.
+BLEND_SHAPE_IMPORT_GAMES = BLEND_SHAPE_EXPORT_GAMES | {"RE9", "ONIWOTS"}
 DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
 
 
@@ -1122,7 +1124,7 @@ def importREMeshFile(filePath,options):
 	meshFileName = os.path.splitext(os.path.split(filePath)[1])[0]
 	gameName = meshFileVersionToGameNameDict.get(reMesh.meshVersion, "")
 	importBlendShapes = (
-		_game_supports_blend_shapes(gameName)
+		str(gameName) in BLEND_SHAPE_IMPORT_GAMES
 		and bool(options.get("importBlendShapes", True))
 	)
 	meshParseStartTime = time.time()

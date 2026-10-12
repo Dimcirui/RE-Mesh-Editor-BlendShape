@@ -19,6 +19,13 @@ BLEND_SHAPE_MESH_VERSIONS = frozenset((
 RE4_BLEND_SHAPE_MESH_VERSIONS = frozenset((
 	VERSION_RE4,
 ))
+# RE9 and Onimusha WotS use Wilds' packed rows and tables, but not its normal
+# groups everywhere, so the Wilds-only normal-group/pivot import stays off.
+# Onimusha bodies with padding1 == 3 store 3-byte 8/8/8 rows instead.
+RE9_BLEND_SHAPE_MESH_VERSIONS = frozenset((
+	VERSION_RE9,
+	VERSION_ONIWOTS,
+))
 
 
 def _mesh_supports_blend_shapes(reMesh):
@@ -26,6 +33,7 @@ def _mesh_supports_blend_shapes(reMesh):
 	return (
 		meshVersion in BLEND_SHAPE_MESH_VERSIONS
 		or meshVersion in RE4_BLEND_SHAPE_MESH_VERSIONS
+		or meshVersion in RE9_BLEND_SHAPE_MESH_VERSIONS
 	)
 
 
@@ -222,6 +230,12 @@ def ReadBlendShapeType7Buffer(blendShapeBuffer,tags):
 	result = np.clip(result, -1.0, 1.0)
 	result[packed == 0x7FEFFBFF, :] = 0.0
 	return result
+
+def ReadBlendShape888Buffer(blendShapeBuffer,tags):
+	"""Decode Onimusha's 3-byte rows: x, y, z bytes centred on 127 (zero 7F7F7F)."""
+	usableSize = (len(blendShapeBuffer) // 3) * 3
+	rows = np.frombuffer(blendShapeBuffer[:usableSize], dtype=np.uint8).reshape((-1, 3))
+	return np.clip((rows.astype(np.float32) - 127.0) / 127.0, -1.0, 1.0)
 
 def ReadBlendShapeRE4Buffer(blendShapeBuffer,tags):
 	"""Decode RE4's 8-byte rows: float16 x, y, z delta and an unused zero."""
@@ -495,7 +509,13 @@ def _parseLODStructureWithBlendShapes(
 			# RE4 rows are absolute float16 deltas; Wilds rows are packed and
 			# scaled by the target AABB.
 			isRE4 = int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
-			reader = ReadBlendShapeRE4Buffer if isRE4 else ReadBlendShapeType7Buffer
+			is888 = int(getattr(blendData, "padding1", 0) or 0) == 3
+			if isRE4:
+				reader = ReadBlendShapeRE4Buffer
+			elif is888:
+				reader = ReadBlendShape888Buffer
+			else:
+				reader = ReadBlendShapeType7Buffer
 			# Every submesh of one LOD lives in the same vertex buffer (VBI0 when
 			# inline, the LOD's stream entry otherwise). Vanilla target runs start
 			# inside submeshes, so take the buffer of the submesh containing the
