@@ -17,9 +17,12 @@ bl_info = {
 # KEEPNORMALS output verified in game.
 # re4_blendshape_export: RE4 (.221108797) exportfile exports shape keys for any
 # shapeKeyExportMode except NO (RE4 has a single layout).
+# oniwots_blendshape_export: Onimusha WotS (.260209350) exportfile takes the Wilds
+# modes (NO / MODE1 / KEEPNORMALS).
 REME_FEATURES = {
 	"wilds_blendshape_export": 1,
 	"re4_blendshape_export": 1,
+	"oniwots_blendshape_export": 1,
 }
 
 import bpy
@@ -1216,7 +1219,7 @@ class ExportREMesh(Operator, ExportHelper):
 		limitRow.prop(self,"limitTotalCount", text="Max Weights")
 		row5 = layout.row()
 		row5.prop(self,"normalizeWeights")
-		if self.filename_ext in (".241111606", ".221108797"):
+		if self.filename_ext in (".241111606", ".221108797", ".260209350"):
 					row = layout.row()
 					split = row.split(factor=0.48)
 					split.label(text="Export Shapekeys?")
@@ -1237,11 +1240,12 @@ class ExportREMesh(Operator, ExportHelper):
 			self.report({"ERROR"},"Mesh file path is missing number extension. Cannot export.")
 			return{"CANCELLED"}
 
-		# Blendshape export is implemented for Monster Hunter Wilds and RE4.
+		# Blendshape export is implemented for Monster Hunter Wilds, Onimusha WotS
+		# (same modes) and RE4.
 		# Keep the UI/property vocabulary generic so other game handlers can be
 		# added later without renaming the shared export plumbing.
 		shapeKeyExportSelection = self.shapeKeyExportMode
-		if meshVersion == 241111606:
+		if meshVersion in (241111606, 260209350):
 			exportBlendShapes = shapeKeyExportSelection != "NO"
 			blendShapeExportMode = {"MODE0": 0, "KEEPNORMALS": -1}.get(shapeKeyExportSelection, 1)
 		elif meshVersion == 221108797:

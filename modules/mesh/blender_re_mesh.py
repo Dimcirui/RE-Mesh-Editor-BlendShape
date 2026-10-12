@@ -132,9 +132,11 @@ def normalize(lst):
 def normalizeVec(vec):
     return Vector(vec).normalized()
 
-BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4"))
-# RE9 and Onimusha WotS blend shapes are imported only; export is not implemented yet.
-BLEND_SHAPE_IMPORT_GAMES = BLEND_SHAPE_EXPORT_GAMES | {"RE9", "ONIWOTS"}
+BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4", "ONIWOTS"))
+# Games written by the unified Wilds blendshape exporter (export modes apply).
+UNIFIED_BLEND_SHAPE_GAMES = frozenset(("MHWILDS", "ONIWOTS"))
+# RE9 blend shapes are imported only; export is not implemented yet.
+BLEND_SHAPE_IMPORT_GAMES = BLEND_SHAPE_EXPORT_GAMES | {"RE9"}
 DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
 
 
@@ -1576,7 +1578,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		_game_supports_blend_shapes(gameName)
 		and bool(options.get("exportBlendShapes", False))
 	)
-	if gameName == "MHWILDS":
+	if gameName in UNIFIED_BLEND_SHAPE_GAMES:
 		from .mhwilds_blendshape import set_export_mode
 		selectedBlendShapeMode = int(options.get("blendShapeExportMode", -1))
 		set_export_mode(parsedMesh, selectedBlendShapeMode)
@@ -2532,7 +2534,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						# Keep-normals payloads store each key's own normals.
 						exportNormals=(
 							parsedSubMesh.normalList
-							if gameName == "MHWILDS"
+							if gameName in UNIFIED_BLEND_SHAPE_GAMES
 							and options.get("blendShapeExportMode") == -1
 							else None
 						),

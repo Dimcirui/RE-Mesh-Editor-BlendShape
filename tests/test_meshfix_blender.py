@@ -156,6 +156,33 @@ def main():
 		assert [key.blendShapeName for key in re4_submesh.blendShapeList] == ["Move"]
 		assert np.allclose(re4_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
 		print("PASS RE4 shape keys export as float16 rows with LOD0 normal-recalc tables and reimport", flush=True)
+
+		# Onimusha WotS: Wilds writer with the 16-byte later mesh-header fields
+		for mode in (1, -1):
+			oni_output = Path(temporary) / ("oniwots-mode" + str(mode) + ".mesh.260209350")
+			assert mesh_io.exportREMeshFile(str(oni_output), dict(
+				options, exportBlendShapes=True, blendShapeExportMode=mode))
+			oni = codec.readREMesh(str(oni_output))
+			oni_bytes = oni_output.read_bytes()
+			header = oni.meshBufferHeader
+			body = oni.blendShapeHeader.blendShapeList[0]
+			assert (list(body.blendS), list(body.blendSSList), body.padding1) == ([-1, 0, 0], [-1], 0)
+			boundary0 = (header.vertexElementSize & 0xFFFF) | ((header.unkn1 & 0xFFFF) << 16)
+			if mode == 1:
+				recalc = oni.fileHeader.normalRecalcOffset
+				assert recalc + 16 == oni.fileHeader.blendShapesOffset
+				assert np.frombuffer(oni_bytes[recalc:recalc + 4], "<u4")[0] == 1
+			else:
+				# no tables: both table boundaries point at file offset 0
+				null = (-header.vertexBufferOffset) & 0xFFFFFFFF
+				assert oni.fileHeader.normalRecalcOffset == 0
+				assert boundary0 == null == header.sunbreakSecondUnknown & 0xFFFFFFFF
+			oni_parsed = parse.ParsedREMesh()
+			oni_parsed.ParseREMesh(oni, {"importBlendShapes": True})
+			oni_submesh = oni_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0]
+			assert [key.blendShapeName for key in oni_submesh.blendShapeList] == ["Move"]
+			assert np.allclose(oni_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
+		print("PASS Onimusha WotS modes 1/KEEPNORMALS export and reimport shape keys", flush=True)
 	assert [tuple(vertex.co) for vertex in data.vertices] == before
 	assert len(data.vertices) == 4 and len(data.polygons) == 2
 	print("PASS corner export retains UV and custom normal seams without modifying source mesh", flush=True)

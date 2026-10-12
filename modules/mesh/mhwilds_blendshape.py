@@ -40,6 +40,20 @@ MAX_TARGET_ENTRIES = 255
 # targets crashed on equip rebuild, 27 and 64 did not. None = no cap.
 # Overridable via _mhwildsMaxActiveTargets on the parsed mesh.
 MAX_ACTIVE_TARGETS_PER_BODY = 64
+# Games written by this unified exporter. Onimusha WotS keeps the Wilds layout
+# (its vanilla meshes include 4-byte Mode-1 bodies and 8-byte keep-normals
+# bodies); its MeshBufferHeader has two extra qwords (prag fields), so every
+# field after them, the boundary shorts and the FloatData slot included, sits
+# 16 bytes later. Onimusha writes -vertexBufferOffset (file offset 0) for an
+# absent table boundary where Wilds writes 0.
+UNIFIED_BLEND_SHAPE_VERSIONS = (
+	mesh_format.VERSION_MHWILDS,
+	mesh_format.VERSION_ONIWOTS,
+)
+
+
+def _header_shift(version):
+	return 16 if int(version) == mesh_format.VERSION_ONIWOTS else 0
 
 
 def set_export_mode(parsed_mesh, mode):
@@ -588,7 +602,9 @@ def _drop_empty_shapes(lods):
 	return empty_names
 
 
-def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
+def build_blend_shape_plan(
+	parsed_mesh, parsed_to_mesh_info, version=mesh_format.VERSION_MHWILDS
+):
 	"""Build active and inactive Wilds targets from Blender viscon groups."""
 	lods = _list_or_empty(
 		getattr(parsed_mesh, "mainMeshLODList", None)
@@ -742,6 +758,16 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		body.targetCount = len(active_targets)
 		body.typing = len(inactive_targets)
 		body.blendTargetList = active_targets + inactive_targets
+		if int(version) == mesh_format.VERSION_ONIWOTS:
+			# Onimusha vanilla: body 0 has -1 per active target in blendS and
+			# -1 for every blendSS; higher LOD bodies count targets 0, 1, 2
+			# and map their channels 0..n-1.
+			count = len(active_targets)
+			if not header.blendShapeList:
+				body.blendS = [-1 if index < count else 0 for index in range(3)]
+				body.blendSSList = [-1] * len(body.blendSSList)
+			else:
+				body.blendS = [index if index < count else 0 for index in range(3)]
 		body_shape_names = tuple(body_shape_names)
 		if alias_owner is not None:
 			owner_shape_names = body_shape_name_sets[alias_owner]
@@ -1383,6 +1409,18 @@ def _global_resource_range(re_mesh):
 	}
 
 
+def _lod0_resource_range(re_mesh):
+	"""LOD0's slice of the unified VBI0 (LOD0 is written first, at vertex 0)."""
+	lod = re_mesh.lodHeader.lodGroupList[0]
+	vertex_count = sum(int(group.vertexCount) for group in lod.meshGroupList)
+	return {
+		"lod": lod,
+		"baseVertex": 0,
+		"vertexCount": int(vertex_count),
+		"baseFace": 0,
+	}
+
+
 def _interleave_second_rows(payload, row_count, second_rows):
 	"""[pos0, pos1, ...] -> [pos0, second0, pos1, second1, ...], 16-byte padded.
 
@@ -1463,8 +1501,12 @@ def _assign_unified_payload_offsets(
 	return bytes(payload_blob)
 
 
-def finalize_mhwilds_export(parsed_mesh, re_mesh):
+def finalize_mhwilds_export(
+	parsed_mesh, re_mesh, version=mesh_format.VERSION_MHWILDS
+):
 	"""Keep Blender geometry and blend-target addressing in global VBI0."""
+	shift = _header_shift(version)
+	re_mesh._mhwildsHeaderShift = shift
 	mode = _export_mode(parsed_mesh=parsed_mesh)
 	setattr(re_mesh, MHWILDS_BLENDSHAPE_MODE_ATTRIBUTE, mode)
 	plan = re_mesh._blendShapeExportPlan
@@ -1537,6 +1579,14 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	)
 	if use_tables:
 		global_range = _global_resource_range(re_mesh)
+		source_indices = plan.get("sourceVertexIndices")
+		source_reliable = plan.get("sourceIdentityReliable")
+		if int(version) == mesh_format.VERSION_ONIWOTS:
+			# Onimusha marker-1 meshes carry LOD0 tables only (higher LODs use
+			# LOD-local indices under markers 3-6). Twins merge on geometry, as
+			# in RE4: imported UV-seam twins are separate Blender vertices.
+			global_range = _lod0_resource_range(re_mesh)
+			source_indices = source_reliable = None
 		face_table, vertex_table = _canonical_tables(
 			re_mesh,
 			0,
@@ -1544,8 +1594,8 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 			visual,
 			elements,
 			global_range,
-			source_vertex_indices=plan.get("sourceVertexIndices"),
-			source_identity_reliable=plan.get("sourceIdentityReliable"),
+			source_vertex_indices=source_indices,
+			source_identity_reliable=source_reliable,
 		)
 	else:
 		face_table, vertex_table = b"", b""
@@ -1619,13 +1669,14 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 		# of the 80-byte MeshBufferHeader (+64: size, +72: offset of the pivot table),
 		# the zero StreamingInfo follows at +80 and the vertex elements at +96. The
 		# old writer swapped descriptor and StreamingInfo, so the header slots read 0.
-		descriptor_offset = mesh_offset + 64
-		stream_info_offset = mesh_offset + 80
+		# Onimusha: 96-byte header, descriptor at +80, StreamingInfo at +96.
+		descriptor_offset = mesh_offset + 64 + shift
+		stream_info_offset = mesh_offset + 80 + shift
 		mesh_header.vertexElementOffset = _align16(stream_info_offset + 16)
 		re_mesh._mhwildsFloatDescriptorOffset = descriptor_offset
 	else:
-		stream_info_offset = mesh_offset + 64
-		mesh_header.vertexElementOffset = _align16(mesh_offset + 80)
+		stream_info_offset = mesh_offset + 64 + shift
+		mesh_header.vertexElementOffset = _align16(mesh_offset + 80 + shift)
 		re_mesh._mhwildsFloatDescriptorOffset = 0
 
 	marker_offset = int(
@@ -1649,6 +1700,15 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	mesh_header.faceBufferOffset = (
 		mesh_header.vertexBufferOffset + mesh_header.vertexBufferSize
 	)
+	if keep_normals and int(version) == mesh_format.VERSION_ONIWOTS:
+		# Absent tables point at file offset 0, relative to the vertex buffer.
+		null_boundary = (-int(mesh_header.vertexBufferOffset)) & 0xFFFFFFFF
+		mesh_header.vertexElementSize = _signed_short(null_boundary & 0xFFFF)
+		mesh_header.unkn1 = _signed_short((null_boundary >> 16) & 0xFFFF)
+		mesh_header.sunbreakSecondUnknown = (
+			(int(payload_start) << 32) | null_boundary
+		)
+		re_mesh._mhwildsCanonicalBoundary0 = null_boundary
 	inline_end = (
 		mesh_header.vertexBufferOffset + mesh_header.totalBufferSize
 	)
@@ -1709,6 +1769,9 @@ def _write_generated_mesh_buffer(self, file, version):
 	mesh_format.write_uint(file, self.vertexBufferSize)
 	mesh_format.write_ushort(file, self.mainVertexElementCount)
 	mesh_format.write_ushort(file, self.vertexElementCount)
+	if version >= mesh_format.VERSION_PRAGDEMO:
+		mesh_format.write_uint64(file, self.prag_unknOffset0)
+		mesh_format.write_uint64(file, self.prag_unknOffset1)
 	mesh_format.write_uint(file, self.block2FaceBufferOffset)
 	mesh_format.write_uint(file, self.NULL)
 	mesh_format.write_short(file, self.vertexElementSize)
@@ -1823,8 +1886,9 @@ def write_mhwilds_mesh(re_mesh, filepath):
 		mesh_version,
 		mesh_format.getNearestRemapVersion(mesh_version),
 	)
-	if version != mesh_format.VERSION_MHWILDS:
+	if version not in UNIFIED_BLEND_SHAPE_VERSIONS:
 		raise RuntimeError("Unified Wilds writer received another mesh format")
+	shift = _header_shift(version)
 	re_mesh.meshVersion = mesh_version
 	re_mesh.meshBufferHeader._mhwildsOwner = re_mesh
 	original_write = mesh_format.MeshBufferHeader.write
@@ -1850,18 +1914,31 @@ def write_mhwilds_mesh(re_mesh, filepath):
 		verification_data = verification_file.read()
 	mesh_header_offset = int(re_mesh.fileHeader.meshOffset)
 	written_low, written_high = struct.unpack_from(
-		"<hh", verification_data, mesh_header_offset + 44
+		"<hh", verification_data, mesh_header_offset + 44 + shift
 	)
 	written_boundary0 = (
 		(int(written_low) & 0xFFFF)
 		| ((int(written_high) & 0xFFFF) << 16)
 	)
 	packed_boundaries = struct.unpack_from(
-		"<Q", verification_data, mesh_header_offset + 48
+		"<Q", verification_data, mesh_header_offset + 48 + shift
 	)[0]
 	written_face_table_end = int(packed_boundaries & 0xFFFFFFFF)
 	written_payload_start = int(packed_boundaries >> 32)
-	if written_face_table_end % 16 or written_payload_start % 16:
+	# Absent tables: 0 in Wilds, file offset 0 (-vertexBufferOffset) in Onimusha.
+	null_boundary = (
+		(-int(re_mesh.meshBufferHeader.vertexBufferOffset)) & 0xFFFFFFFF
+		if version == mesh_format.VERSION_ONIWOTS else 0
+	)
+	no_tables = null_boundary and written_face_table_end == null_boundary
+	if no_tables:
+		if written_payload_start % 16 or written_payload_start > int(
+			re_mesh.meshBufferHeader.vertexBufferSize
+		):
+			raise RuntimeError(
+				f"payload start 0x{written_payload_start:X} is not aligned or inside the vertex buffer"
+			)
+	elif written_face_table_end % 16 or written_payload_start % 16:
 		raise RuntimeError(
 			"canonical boundaries are not 16-byte aligned: "
 			f"0x{written_face_table_end:X}/0x{written_payload_start:X}"
@@ -1872,7 +1949,7 @@ def write_mhwilds_mesh(re_mesh, filepath):
 			"Serialized first canonical boundary mismatch: "
 			f"0x{written_boundary0:08X}/0x{expected_boundary0:08X}"
 		)
-	if not (
+	if not no_tables and not (
 		written_boundary0
 		<= written_face_table_end
 		<= written_payload_start
@@ -1908,7 +1985,7 @@ def write_mhwilds_mesh(re_mesh, filepath):
 				"keep-normals export wrote a normal marker: "
 				f"0x{written_normal_offset:X}"
 			)
-		if written_boundary0 or written_face_table_end:
+		if written_boundary0 != null_boundary or written_face_table_end != null_boundary:
 			raise RuntimeError("keep-normals export wrote canonical tables")
 		vertex_count = int(_global_resource_range(re_mesh)["vertexCount"])
 		elements_end = max(
