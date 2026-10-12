@@ -2,7 +2,7 @@
 bl_info = {
 	"name": "RE-Mesh-Editor-BlendShape",
 	"author": "NSA Cloud, Forked by Ridog8, BlendShape by Dimcirui",
-	"version": (0, 70, 3),
+	"version": (0, 70, 4),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
