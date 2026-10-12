@@ -187,6 +187,35 @@ def main():
 	assert len(data.vertices) == 4 and len(data.polygons) == 2
 	print("PASS corner export retains UV and custom normal seams without modifying source mesh", flush=True)
 
+	# Blender caps shape key names at 63 bytes; import keeps the full name and
+	# export restores it (Onimusha faces ship 90-byte channel names).
+	long_collection = bpy.data.collections.new("LongShapeKeyNames")
+	bpy.context.scene.collection.children.link(long_collection)
+	long_names = ["blendShape1503.jawOpen_lipCornerDepressor_lipCornerPuller_lipStretcher_" + side for side in "LR"]
+	shapes = []
+	for index, name in enumerate(long_names):
+		shape = parse.BlendShape()
+		shape.blendShapeName = name
+		shape.deltas = [(0, 0, .1 * (index + 1)), (0, 0, 0), (0, 0, 0)]
+		shapes.append(shape)
+	long_obj = mesh_io.importMesh(
+		"LOD_0_Group_0_Sub_0__LongNameMat", vertexList=vertices, faceList=faces,
+		vertexNormalList=[(0, 0, 1)] * 3, material=None, collection=long_collection,
+		rotate90=False, blendShapeList=shapes, importBlendShapes=True)
+	long_obj.name = "LOD_0_Group_0_Sub_0__LongNameMat"
+	long_obj.data.uv_layers.new(name="UVMap")
+	long_obj.data.materials.append(bpy.data.materials.new("LongNameMat"))
+	blender_names = [key.name for key in long_obj.data.shape_keys.key_blocks[1:]]
+	assert all(len(name.encode()) <= 63 for name in blender_names) and blender_names[0] != blender_names[1]
+	with tempfile.TemporaryDirectory(prefix="meshfix-longnames-") as temporary:
+		long_output = Path(temporary) / "long-names.mesh.260209350"
+		assert mesh_io.exportREMeshFile(str(long_output), dict(
+			options, targetCollection=long_collection.name, exportBlendShapes=True,
+			blendShapeExportMode=1))
+		reread = codec.readREMesh(str(long_output))
+		assert [reread.rawNameList[i] for i in reread.blendShapeNameRemapList] == long_names
+	print("PASS shape key names longer than 63 bytes survive import and export", flush=True)
+
 	dd2_collection = bpy.data.collections.new("DD2WeightExportChecks")
 	bpy.context.scene.collection.children.link(dd2_collection)
 	armature_data = bpy.data.armatures.new("DD2CheckSkeleton")

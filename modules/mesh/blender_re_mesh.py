@@ -152,6 +152,20 @@ def _is_baked_shape_key(key):
 	)
 
 
+# Blender caps shape key names at 63 bytes (Onimusha faces and some Wilds
+# meshes ship longer channel names, and jcns bind channels by the full name's
+# hash). Import keeps the full names here, keyed by the Blender key name.
+SHAPE_KEY_FULL_NAMES_PROPERTY = "RE_FullShapeKeyNames"
+
+
+def _export_shape_key_name(meshData, shapeKey):
+	keys = meshData.shape_keys
+	fullNames = keys.get(SHAPE_KEY_FULL_NAMES_PROPERTY) if keys is not None else None
+	if fullNames is not None and shapeKey.name in fullNames:
+		return str(fullNames[shapeKey.name])
+	return shapeKey.name
+
+
 def _get_export_shape_keys(meshData):
 	if meshData.shape_keys is None:
 		return (None, [])
@@ -412,7 +426,7 @@ def _build_blend_shape_entries_for_export(
 			finally:
 				bpy.data.meshes.remove(shapeMesh)
 			entry = BlendShape()
-			entry.blendShapeName = shapeKey.name
+			entry.blendShapeName = _export_shape_key_name(rawsubmesh.data, shapeKey)
 			entry.deltas = np.asarray(deltas, dtype=np.float32)
 			entry.normals = shapeNormals
 			result.append(entry)
@@ -870,10 +884,13 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		skB.interpolation = 'KEY_LINEAR'
 		skB.value = 0.0
 		
+		fullNames = {}
 		for blendShapeEntry in blendShapeList:
 			name = blendShapeEntry.blendShapeName
 			deltas = [Vector(val) for val in blendShapeEntry.deltas]
 			sk = meshObj.shape_key_add(name = name)
+			if sk.name != name:
+				fullNames[sk.name] = name
 			sk.interpolation = 'KEY_LINEAR'
 			sk.value = 0.0
 			sk.slider_min = 0.0
@@ -887,6 +904,8 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 				if rotate90:
 					delta = rotate90Matrix.to_3x3() @ delta
 				sk.data[i].co = meshObj.data.vertices[i].co + delta
+		if fullNames:
+			meshObj.data.shape_keys[SHAPE_KEY_FULL_NAMES_PROPERTY] = fullNames
 	
 	return meshObj
 
