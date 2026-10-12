@@ -8,3 +8,7 @@ TextureCache/
 __pycache__/
 re-mesh-editor-meshfixes_updater/
 .claude/settings.local.json
+
+# Only the upstream material presets are tracked; presets added locally
+# (saved from Blender or copied in) stay out of the repository.
+Presets/**/*.json
