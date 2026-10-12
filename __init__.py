@@ -2,7 +2,7 @@
 bl_info = {
 	"name": "RE-Mesh-Editor-BlendShape",
 	"author": "NSA Cloud, Forked by Ridog8, BlendShape by Dimcirui",
-	"version": (0, 70, 1),
+	"version": (0, 70, 3),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
@@ -15,8 +15,11 @@ bl_info = {
 # Bump a version when its operator values or meaning change.
 # wilds_blendshape_export: exportfile takes shapeKeyExportMode NO / MODE1 / KEEPNORMALS,
 # KEEPNORMALS output verified in game.
+# re4_blendshape_export: RE4 (.221108797) exportfile exports shape keys for any
+# shapeKeyExportMode except NO (RE4 has a single layout).
 REME_FEATURES = {
 	"wilds_blendshape_export": 1,
+	"re4_blendshape_export": 1,
 }
 
 import bpy
@@ -1213,11 +1216,13 @@ class ExportREMesh(Operator, ExportHelper):
 		limitRow.prop(self,"limitTotalCount", text="Max Weights")
 		row5 = layout.row()
 		row5.prop(self,"normalizeWeights")
-		if self.filename_ext == ".241111606":
+		if self.filename_ext in (".241111606", ".221108797"):
 					row = layout.row()
 					split = row.split(factor=0.48)
 					split.label(text="Export Shapekeys?")
 					split.prop(self, "shapeKeyExportMode", text="")
+					if self.filename_ext == ".221108797":
+						layout.label(text="RE4: one layout, any choice except No exports", icon="INFO")
 
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
@@ -1232,13 +1237,17 @@ class ExportREMesh(Operator, ExportHelper):
 			self.report({"ERROR"},"Mesh file path is missing number extension. Cannot export.")
 			return{"CANCELLED"}
 
-		# Blendshape export is currently implemented only for Monster Hunter Wilds.
+		# Blendshape export is implemented for Monster Hunter Wilds and RE4.
 		# Keep the UI/property vocabulary generic so other game handlers can be
 		# added later without renaming the shared export plumbing.
 		shapeKeyExportSelection = self.shapeKeyExportMode
 		if meshVersion == 241111606:
 			exportBlendShapes = shapeKeyExportSelection != "NO"
 			blendShapeExportMode = {"MODE0": 0, "KEEPNORMALS": -1}.get(shapeKeyExportSelection, 1)
+		elif meshVersion == 221108797:
+			# RE4 has a single blendshape layout; the Wilds modes do not apply.
+			exportBlendShapes = shapeKeyExportSelection != "NO"
+			blendShapeExportMode = 0
 		else:
 			exportBlendShapes = False
 			blendShapeExportMode = 0

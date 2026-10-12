@@ -9,15 +9,24 @@ VERSION_MHS3 = 250604100
 VERSION_ONIWOTS = 260209350
 VERSION_PRAGDEMO = 250925211
 VERSION_RE9 = 250925211
+VERSION_RE4 = 221108797
 
 BLEND_SHAPE_MESH_VERSIONS = frozenset((
 	VERSION_MHWILDS_BETA,
 	VERSION_MHWILDS,
 ))
+# RE4 stores LOD0 blend rows as absolute float16 (dx, dy, dz, 0).
+RE4_BLEND_SHAPE_MESH_VERSIONS = frozenset((
+	VERSION_RE4,
+))
 
 
 def _mesh_supports_blend_shapes(reMesh):
-	return int(getattr(reMesh, "meshVersion", 0) or 0) in BLEND_SHAPE_MESH_VERSIONS
+	meshVersion = int(getattr(reMesh, "meshVersion", 0) or 0)
+	return (
+		meshVersion in BLEND_SHAPE_MESH_VERSIONS
+		or meshVersion in RE4_BLEND_SHAPE_MESH_VERSIONS
+	)
 
 
 SIX_WEIGHT_MESH_VERSIONS = frozenset([
@@ -213,6 +222,12 @@ def ReadBlendShapeType7Buffer(blendShapeBuffer,tags):
 	result = np.clip(result, -1.0, 1.0)
 	result[packed == 0x7FEFFBFF, :] = 0.0
 	return result
+
+def ReadBlendShapeRE4Buffer(blendShapeBuffer,tags):
+	"""Decode RE4's 8-byte rows: float16 x, y, z delta and an unused zero."""
+	usableSize = (len(blendShapeBuffer) // 8) * 8
+	rows = np.frombuffer(blendShapeBuffer[:usableSize], dtype="<f2").reshape((-1, 4))
+	return rows[:, :3].astype(np.float32)
 
 def ApplyBlendShapeAABBToDecodedRows(
 	decodedRows, aabbEntry, blendShapeTyping, useSymmetricScale=False
@@ -477,8 +492,10 @@ def _parseLODStructureWithBlendShapes(
 			blendData = reMesh.blendShapeHeader.blendShapeList[lodIndex]
 
 		if blendData is not None:
-			# Current blendshape parsing is enabled only for Wilds.
-			reader = ReadBlendShapeType7Buffer
+			# RE4 rows are absolute float16 deltas; Wilds rows are packed and
+			# scaled by the target AABB.
+			isRE4 = int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
+			reader = ReadBlendShapeRE4Buffer if isRE4 else ReadBlendShapeType7Buffer
 			# Every submesh of one LOD lives in the same vertex buffer (VBI0 when
 			# inline, the LOD's stream entry otherwise). Vanilla target runs start
 			# inside submeshes, so take the buffer of the submesh containing the
@@ -520,7 +537,7 @@ def _parseLODStructureWithBlendShapes(
 			# Wilds no-recalc meshes (normalRecalcOffset == 0) and bodies with
 			# padding1 == 1 store 8 bytes per vertex: [position delta, second row].
 			# vertOffset counts vertices, so keep only the position rows.
-			if (
+			if not isRE4 and (
 				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
 				or int(getattr(blendData, "padding1", 0) or 0) == 1
 			):
@@ -706,12 +723,13 @@ def _parseLODStructureWithBlendShapes(
 							)
 							count = int(entry.vertCount)
 							deltas = decoded[start:start + count].copy()
-							deltas = ApplyBlendShapeAABBToDecodedRows(
-								deltas,
-								blendData.aabbList[targetIndex],
-								blendData.typing,
-								useSymmetricScale,
-							)
+							if not isRE4:
+								deltas = ApplyBlendShapeAABBToDecodedRows(
+									deltas,
+									blendData.aabbList[targetIndex],
+									blendData.typing,
+									useSymmetricScale,
+								)
 							scatterDeltas(
 								targetGroupIndex,
 								shapeName,
@@ -1166,9 +1184,16 @@ class ParsedREMesh:
 						lastElement.posStartOffset
 						+ vertexCount * lastElement.stride
 					)
-					headerStart = (
-						int(reMesh.meshBufferHeader.sunbreakSecondUnknown) >> 32
-					) & 0xFFFFFFFF
+					if reMesh.meshVersion in RE4_BLEND_SHAPE_MESH_VERSIONS:
+						# RE4 keeps the payload start in the two shorts at +44.
+						headerStart = (
+							(int(reMesh.meshBufferHeader.vertexElementSize) & 0xFFFF)
+							| ((int(reMesh.meshBufferHeader.unkn1) & 0xFFFF) << 16)
+						)
+					else:
+						headerStart = (
+							int(reMesh.meshBufferHeader.sunbreakSecondUnknown) >> 32
+						) & 0xFFFFFFFF
 					blendShapeStartPos = (
 						headerStart
 						if fallbackStart <= headerStart

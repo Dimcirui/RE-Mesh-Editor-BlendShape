@@ -132,7 +132,7 @@ def normalize(lst):
 def normalizeVec(vec):
     return Vector(vec).normalized()
 
-BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS",))
+BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4"))
 DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
 
 
@@ -1851,9 +1851,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh
 				cloneObj.name ="CLN_" + obj.name
-				# Wilds blendshape export needs an undeformed Basis clone. Other games
-				# retain the original RE Mesh Editor evaluated-clone behavior exactly.
-				if _game_supports_blend_shapes(gameName):
+				# Blendshape export needs an undeformed Basis clone (Wilds always, RE4
+				# when shape keys are exported). Otherwise the current key mix is baked
+				# in, as in the original RE Mesh Editor.
+				if gameName == "MHWILDS" or blendShapeExportEnabled:
 					storedShapeValues = _temporarily_zero_shape_key_values(obj)
 					try:
 						obj.data.update()

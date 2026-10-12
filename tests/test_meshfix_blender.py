@@ -130,6 +130,32 @@ def main():
 				assert len(wilds_submesh.normalGroupList) == 6
 			assert abs(shape.value - .7) < 1e-6 and abs(dummy.value - .4) < 1e-6
 		print("PASS Wilds modes 1/KEEPNORMALS retain split-vertex shapes and exclude DUMMY_ preview keys", flush=True)
+
+		re4_output = Path(temporary) / "re4-shapes.mesh.221108797"
+		assert mesh_io.exportREMeshFile(str(re4_output), dict(options, exportBlendShapes=True))
+		re4 = codec.readREMesh(str(re4_output))
+		body = re4.blendShapeHeader.blendShapeList[0]
+		assert re4.blendShapeHeader.count == 1
+		assert (body.targetCount, body.unknFlag, list(body.blendS)) == (1, 1, [-1, 0, 0])
+		assert body.typing >= 1 and list(body.blendSSList) == [-1]
+		active = body.blendTargetList[0]
+		assert [(run.subMeshVertexStartIndex, run.vertCount) for run in active.subMeshEntryList] == [(0, 6)]
+		# float16 rows (dx, dy, dz, 0) right after the vertex elements
+		header = re4.meshBufferHeader
+		start = (header.vertexElementSize & 0xFFFF) | ((header.unkn1 & 0xFFFF) << 16)
+		rows = np.frombuffer(bytes(header.vertexBuffer[start:start + 6 * 8]), "<f2").reshape(6, 4)
+		assert np.allclose(rows[:, :3], expected_deltas, atol=.001) and not rows[:, 3].any()
+		# LOD0 canonical tables (6 vertices, 6 indices, 16-byte padded) fill the
+		# section up to the blend header
+		recalc = re4.fileHeader.normalRecalcOffset
+		count, = np.frombuffer(re4_output.read_bytes()[recalc:recalc + 8], "<u8")
+		assert count == 1 and recalc + 48 + 32 + 32 == re4.fileHeader.blendShapesOffset
+		re4_parsed = parse.ParsedREMesh()
+		re4_parsed.ParseREMesh(re4, {"importBlendShapes": True})
+		re4_submesh = re4_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0]
+		assert [key.blendShapeName for key in re4_submesh.blendShapeList] == ["Move"]
+		assert np.allclose(re4_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
+		print("PASS RE4 shape keys export as float16 rows with LOD0 normal-recalc tables and reimport", flush=True)
 	assert [tuple(vertex.co) for vertex in data.vertices] == before
 	assert len(data.vertices) == 4 and len(data.polygons) == 2
 	print("PASS corner export retains UV and custom normal seams without modifying source mesh", flush=True)

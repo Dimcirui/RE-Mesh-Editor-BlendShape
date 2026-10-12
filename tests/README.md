@@ -22,7 +22,8 @@ normalization, the Wilds normal-group byte mapping and game version tables.
 - `test_meshfix_blender.py`: rotated custom normals on import, DD2 secondary
   weight bank import/export, Limit Total with DD2 banks and paint masks, UV
   and custom-normal seams kept by corner splitting, Wilds shape key export
-  (Recalculate Normals and KEEPNORMALS modes, `DUMMY_` keys skipped).
+  (Recalculate Normals and KEEPNORMALS modes, `DUMMY_` keys skipped), RE4
+  shape key export (float16 rows, LOD0 normal-recalc tables, reimport).
 - `test_export_reliability_blender.py`: export cleanup on success and failure,
   atomic writes, operator failure reports, multi-file import, batch export
   per-item options, UV validation (exported maps only, reference maps,
