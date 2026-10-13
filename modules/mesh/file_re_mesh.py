@@ -2448,8 +2448,8 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	# Wilds blend metadata is derived from the parsed Blender shape keys. The
 	# focused helper owns only the Wilds-specific table and payload layout.
 	blendShapePlan = None
-	# Onimusha WotS uses the same unified writer with a shifted mesh header.
-	if version in (VERSION_MHWILDS, VERSION_ONIWOTS):
+	# Onimusha WotS and RE9 use the same unified writer with a shifted mesh header.
+	if version in (VERSION_MHWILDS, VERSION_ONIWOTS, VERSION_RE9):
 		from .mhwilds_blendshape import build_blend_shape_plan
 		blendShapePlan = build_blend_shape_plan(
 			parsedMesh, parsedSubMeshToSubMeshDataDict, version
@@ -2697,7 +2697,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	extraWeightBuffer.close()
 	faceBuffer.close()
 	secondaryWeightBuffer.close()
-	if version in (VERSION_MHWILDS, VERSION_ONIWOTS) and blendShapePlan is not None:
+	if version in (VERSION_MHWILDS, VERSION_ONIWOTS, VERSION_RE9) and blendShapePlan is not None:
 		from .mhwilds_blendshape import finalize_mhwilds_export
 		finalize_mhwilds_export(parsedMesh, reMesh, version)
 	if version == VERSION_RE4 and blendShapePlan is not None:
@@ -2818,7 +2818,7 @@ def _writeREMeshDirect(reMeshFile,filepath):
 			meshVersion = int(os.path.splitext(filepath)[1].replace(".",""))
 		except:
 			meshVersion = 0
-		if blendShapeWriter == "MHWILDS" and meshVersion in (241111606, 260209350):
+		if blendShapeWriter == "MHWILDS" and meshVersion in (241111606, 260209350, 250925211):
 			from .mhwilds_blendshape import write_mhwilds_mesh
 			return write_mhwilds_mesh(reMeshFile, filepath)
 		raise RuntimeError(

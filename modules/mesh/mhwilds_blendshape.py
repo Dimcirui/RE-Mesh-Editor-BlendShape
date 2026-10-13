@@ -1,5 +1,6 @@
 """Monster Hunter Wilds blend-shape support for the unified RE Mesh exporter."""
 
+import bisect
 import copy
 import math
 import os
@@ -46,14 +47,22 @@ MAX_ACTIVE_TARGETS_PER_BODY = 64
 # field after them, the boundary shorts and the FloatData slot included, sits
 # 16 bytes later. Onimusha writes -vertexBufferOffset (file offset 0) for an
 # absent table boundary where Wilds writes 0.
+# RE9 keeps the Wilds layout too, with the same 16-byte header shift (prag
+# fields), Wilds blendS/blendSS numbering (ch0100, ch1800; ch0600 uses the
+# Onimusha numbering instead) and a nonzero run word, see _re9_run_words.
 UNIFIED_BLEND_SHAPE_VERSIONS = (
 	mesh_format.VERSION_MHWILDS,
 	mesh_format.VERSION_ONIWOTS,
+	mesh_format.VERSION_RE9,
+)
+SHIFTED_HEADER_VERSIONS = (
+	mesh_format.VERSION_ONIWOTS,
+	mesh_format.VERSION_RE9,
 )
 
 
 def _header_shift(version):
-	return 16 if int(version) == mesh_format.VERSION_ONIWOTS else 0
+	return 16 if int(version) in SHIFTED_HEADER_VERSIONS else 0
 
 
 def set_export_mode(parsed_mesh, mode):
@@ -420,6 +429,71 @@ def _run_entries(runs, lo):
 	return entries
 
 
+def _re9_split_runs(lod, parsed_to_mesh_info, active_targets, inactive_targets):
+	"""RE9 runs stay inside one submesh and carry a run word: (index of that
+	submesh within its viscon group << 8) | visconGroupID, as in every vanilla
+	RE9 run. Splitting keeps the payload order, so offsets are unchanged.
+	Returns the inactive targets, rechunked to the entry limit."""
+	starts = []
+	for order, viscon in enumerate(
+		_list_or_empty(getattr(lod, "visconGroupList", None))
+	):
+		group_id = int(getattr(viscon, "visconGroupNum", order) or 0)
+		for index, parsed_submesh in enumerate(
+			_list_or_empty(getattr(viscon, "subMeshList", None))
+		):
+			mesh_info = parsed_to_mesh_info.get(parsed_submesh)
+			if mesh_info is not None:
+				starts.append((int(mesh_info.vertexStartIndex), index, group_id))
+	starts.sort()
+	bounds = [start for start, _index, _group in starts]
+
+	def split(entries):
+		result = []
+		for entry in entries:
+			vertex = int(entry.subMeshVertexStartIndex)
+			end = vertex + int(entry.vertCount)
+			while vertex < end:
+				slot = bisect.bisect_right(bounds, vertex) - 1
+				piece_end = end
+				if slot + 1 < len(bounds):
+					piece_end = min(end, bounds[slot + 1])
+				piece = mesh_format.BlendSubMesh()
+				piece.subMeshVertexStartIndex = vertex
+				piece.vertOffset = 0
+				piece.vertCount = piece_end - vertex
+				piece.paramUnkn3 = 0
+				if slot >= 0:
+					_start, index, group_id = starts[slot]
+					piece.paramUnkn3 = ((index & 0xFFFFFF) << 8) | (group_id & 0xFF)
+				result.append(piece)
+				vertex = piece_end
+		return result
+
+	for target in active_targets:
+		target.subMeshEntryList = split(target.subMeshEntryList)
+		if len(target.subMeshEntryList) > MAX_TARGET_ENTRIES:
+			raise RuntimeError(
+				f"RE9 blend target has more than {MAX_TARGET_ENTRIES} vertex runs"
+			)
+		target.subMeshEntryCount = len(target.subMeshEntryList)
+	entries = [
+		entry for target in inactive_targets
+		for entry in split(target.subMeshEntryList)
+	]
+	rechunked = []
+	for chunk_start in range(0, len(entries), MAX_TARGET_ENTRIES):
+		target = mesh_format.BlendTarget()
+		target.blendSSIndex = 0
+		target.blendShapeNum = 0
+		target.unkn0 = 0
+		target.unkn2 = 0
+		target.subMeshEntryList = entries[chunk_start:chunk_start + MAX_TARGET_ENTRIES]
+		target.subMeshEntryCount = len(target.subMeshEntryList)
+		rechunked.append(target)
+	return rechunked
+
+
 def _split_target_cap(channel_counts, max_targets):
 	"""Share a body-wide target cap between viscon groups by channel count.
 
@@ -676,9 +750,16 @@ def build_blend_shape_plan(
 		body_channel_count = 0
 		body_shape_names = []
 
+		submesh_groups = _viscon_submeshes(lod, parsed_to_mesh_info)
+		if int(version) == mesh_format.VERSION_RE9:
+			# Every vanilla RE9 active target covers one submesh, with its own
+			# AABB (ch0600: face and accessory targets in one viscon group).
+			submesh_groups = [
+				[submesh] for submeshes in submesh_groups for submesh in submeshes
+			]
 		grouped = [
 			_group_channels(submeshes, with_normals=keep_normals)
-			for submeshes in _viscon_submeshes(lod, parsed_to_mesh_info)
+			for submeshes in submesh_groups
 		]
 		group_caps = _split_target_cap(
 			[len(channels) for _lo, _valid, channels in grouped], max_targets
@@ -755,6 +836,10 @@ def build_blend_shape_plan(
 				target.subMeshEntryCount = len(target.subMeshEntryList)
 				inactive_targets.append(target)
 
+		if int(version) == mesh_format.VERSION_RE9:
+			inactive_targets = _re9_split_runs(
+				lod, parsed_to_mesh_info, active_targets, inactive_targets
+			)
 		body.targetCount = len(active_targets)
 		body.typing = len(inactive_targets)
 		body.blendTargetList = active_targets + inactive_targets
@@ -1088,6 +1173,74 @@ def _canonical_tables(
 	return bytes(face_table), bytes(vertex_table)
 
 
+def _lod_prefix_tables(
+	re_mesh,
+	table_lods,
+	faces,
+	visual,
+	elements,
+	source_vertex_indices=None,
+	source_identity_reliable=None,
+):
+	"""Canonical tables for several LODs of one vertex buffer, as vanilla
+	writes them: rows at each LOD's own vertex/face position in the buffer,
+	values LOD-local (verified on RE9 ch0200/ch0600/ch1800 and Onimusha)."""
+	index_stride = 4 if re_mesh.lodHeader.has32BitIndexBuffer else 2
+	face_rows = []
+	vertex_rows = []
+	for lod_index, lod in enumerate(table_lods):
+		entries = [
+			entry for group in lod.meshGroupList
+			for entry in group.vertexInfoList
+		]
+		if not entries:
+			continue
+		base_vertex = min(int(entry.vertexStartIndex) for entry in entries)
+		base_face = min(int(entry.faceStartIndex) for entry in entries)
+		vertex_count = sum(int(group.vertexCount) for group in lod.meshGroupList)
+		face_count = max(
+			int(entry.faceStartIndex) + int(entry.faceCount) for entry in entries
+		) - base_face
+		shifted = []
+		for element in elements:
+			element = copy.copy(element)
+			element.posStartOffset = (
+				int(element.posStartOffset) + base_vertex * int(element.stride)
+			)
+			shifted.append(element)
+		sources = reliable = None
+		if source_vertex_indices is not None and source_identity_reliable is not None:
+			sources = source_vertex_indices[base_vertex:base_vertex + vertex_count]
+			reliable = source_identity_reliable[base_vertex:base_vertex + vertex_count]
+		face_table, vertex_table = _canonical_tables(
+			re_mesh,
+			lod_index,
+			faces[base_face * index_stride:],
+			visual,
+			shifted,
+			{
+				"lod": lod,
+				"baseVertex": base_vertex,
+				"vertexCount": vertex_count,
+				"baseFace": base_face,
+			},
+			source_vertex_indices=sources,
+			source_identity_reliable=reliable,
+		)
+		face_rows.append((base_face, face_table[:face_count * 4]))
+		vertex_rows.append((base_vertex, vertex_table[:vertex_count * 4]))
+
+	def place(rows):
+		end = max((start * 4 + len(table) for start, table in rows), default=0)
+		blob = bytearray(end)
+		for start, table in rows:
+			blob[start * 4:start * 4 + len(table)] = table
+		blob.extend(b"\x00" * mesh_format.getPaddingAmount(len(blob), 16))
+		return bytes(blob)
+
+	return place(face_rows), place(vertex_rows)
+
+
 def _resolve_alias_map(raw_map, lod_count):
 	result = {}
 	for raw_target, raw_source in dict(raw_map or {}).items():
@@ -1409,18 +1562,6 @@ def _global_resource_range(re_mesh):
 	}
 
 
-def _lod0_resource_range(re_mesh):
-	"""LOD0's slice of the unified VBI0 (LOD0 is written first, at vertex 0)."""
-	lod = re_mesh.lodHeader.lodGroupList[0]
-	vertex_count = sum(int(group.vertexCount) for group in lod.meshGroupList)
-	return {
-		"lod": lod,
-		"baseVertex": 0,
-		"vertexCount": int(vertex_count),
-		"baseFace": 0,
-	}
-
-
 def _interleave_second_rows(payload, row_count, second_rows):
 	"""[pos0, pos1, ...] -> [pos0, second0, pos1, second1, ...], 16-byte padded.
 
@@ -1578,24 +1719,25 @@ def finalize_mhwilds_export(
 		for index in range(len(bodies))
 	)
 	if use_tables:
-		global_range = _global_resource_range(re_mesh)
 		source_indices = plan.get("sourceVertexIndices")
 		source_reliable = plan.get("sourceIdentityReliable")
 		if int(version) == mesh_format.VERSION_ONIWOTS:
-			# Onimusha marker-1 meshes carry LOD0 tables only (higher LODs use
-			# LOD-local indices under markers 3-6). Twins merge on geometry, as
-			# in RE4: imported UV-seam twins are separate Blender vertices.
-			global_range = _lod0_resource_range(re_mesh)
+			# Twins merge on geometry, as in RE4: imported UV-seam twins are
+			# separate Blender vertices.
 			source_indices = source_reliable = None
-		face_table, vertex_table = _canonical_tables(
+		# Every LOD with a blend body gets tables, so its shapes recalculate
+		# normals; the marker counts them (vanilla RE9/Onimusha, 1 = LOD0 only).
+		face_table, vertex_table = _lod_prefix_tables(
 			re_mesh,
-			0,
+			lods[:len(bodies)],
 			bytes(mesh_header.faceBuffer),
 			visual,
 			elements,
-			global_range,
-			source_vertex_indices=source_indices,
-			source_identity_reliable=source_reliable,
+			source_indices,
+			source_reliable,
+		)
+		re_mesh._mhwildsMarkerValue = len(bodies) - sum(
+			1 for target in aliases if int(target) < len(bodies)
 		)
 	else:
 		face_table, vertex_table = b"", b""
@@ -1810,6 +1952,13 @@ def _write_generated_mesh_buffer(self, file, version):
 	file.write(self.faceBuffer)
 
 
+def _marker_value(re_mesh, mode):
+	"""Marker = number of leading LODs with canonical tables; mode 0 stays 0."""
+	if int(mode) != 1:
+		return int(mode)
+	return int(getattr(re_mesh, "_mhwildsMarkerValue", 1))
+
+
 def _apply_normal_contract(data, re_mesh):
 	"""Write the Blender-generated R38 normal/pivot contract in mode 0 or 1."""
 	mode = _export_mode(re_mesh=re_mesh)
@@ -1855,7 +2004,9 @@ def _apply_normal_contract(data, re_mesh):
 		# The reserved slot must be unused metadata padding before we populate it.
 		if any(data[marker_offset:marker_offset + 16]):
 			raise RuntimeError("slot was overwritten by another structure")
-		struct.pack_into("<IIII", data, marker_offset, mode, 0, 0, 0)
+		struct.pack_into(
+			"<IIII", data, marker_offset, _marker_value(re_mesh, mode), 0, 0, 0
+		)
 
 	pivot_offset = len(data)
 	data.extend(pivot_bytes)
@@ -2009,7 +2160,7 @@ def write_mhwilds_mesh(re_mesh, filepath):
 				f"0x{written_normal_offset:X}/0x{written_blend_offset:X}"
 			)
 		marker = struct.unpack_from("<IIII", verification_data, marker_offset)
-		expected_marker = (mode, 0, 0, 0)
+		expected_marker = (_marker_value(re_mesh, mode), 0, 0, 0)
 		if marker != expected_marker:
 			raise RuntimeError(
 				f"marker mismatch for mode {mode}: "

@@ -132,13 +132,13 @@ def normalize(lst):
 def normalizeVec(vec):
     return Vector(vec).normalized()
 
-BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4", "ONIWOTS", "MHRSB"))
+BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4", "ONIWOTS", "MHRSB", "RE9"))
 # Games written by the unified Wilds blendshape exporter.
-UNIFIED_BLEND_SHAPE_GAMES = frozenset(("MHWILDS", "ONIWOTS"))
+UNIFIED_BLEND_SHAPE_GAMES = frozenset(("MHWILDS", "ONIWOTS", "RE9"))
 # Games whose export takes the Recalculate Normals / Keep Custom Normals modes.
-BLEND_SHAPE_MODE_GAMES = UNIFIED_BLEND_SHAPE_GAMES | {"MHRSB"}
-# RE9 blend shapes are imported only; export is not implemented yet.
-BLEND_SHAPE_IMPORT_GAMES = BLEND_SHAPE_EXPORT_GAMES | {"RE9"}
+# RE9 has no vanilla keep-normals mesh, so it always recalculates normals.
+BLEND_SHAPE_MODE_GAMES = frozenset(("MHWILDS", "ONIWOTS", "MHRSB"))
+BLEND_SHAPE_IMPORT_GAMES = BLEND_SHAPE_EXPORT_GAMES
 DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
 
 
@@ -1607,6 +1607,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 			f"Blendshape export mode: {selectedBlendShapeMode}; "
 			f"exportShapeKeys={blendShapeExportEnabled}"
 		)
+	elif gameName in UNIFIED_BLEND_SHAPE_GAMES:
+		# Marker 1: recalculate normals, LOD0 canonical tables.
+		from .mhwilds_blendshape import set_export_mode
+		set_export_mode(parsedMesh, 1)
 	newMeshDataList = []
 	vertexGroupsSet = set()
 	weightedBonesSet = set()

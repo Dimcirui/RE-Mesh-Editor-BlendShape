@@ -175,14 +175,9 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 				"Do not export Blender shape keys or Wilds blendshape data. Alternatevly, if exporting shapekeys, you can use the prefix 'DUMMY_' for shapekey names, or untick (mute) them, to exclude export of them"
 			),
 			(
-				"MODE0",
-				"?broken",
-				"NOT RECOMMENDED: writes normal-recalc marker 0, which vanilla meshes never use. In game it darkened faces under side/back light"
-			),
-			(
 				"MODE1",
-				"Recalculate Normals",
-				"Writes normal-recalc marker 1, as vanilla body/armor meshes do. The game recalculates normals from the deformed geometry, so authored custom normals are replaced by recalculated ones"
+				"Recalculate Normals (in game)",
+				"Writes normal-recalc tables, as vanilla faces and armor do. The game recalculates normals from the deformed geometry at runtime, so authored custom normals are replaced by recalculated ones"
 			),
 			(
 				"KEEPNORMALS",

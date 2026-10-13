@@ -184,6 +184,27 @@ def main():
 			assert np.allclose(oni_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
 		print("PASS Onimusha WotS modes 1/KEEPNORMALS export and reimport shape keys", flush=True)
 
+		# RE9: Wilds writer with the shifted header, always marker 1, run words
+		re9_output = Path(temporary) / "re9-shapes.mesh.250925211"
+		assert mesh_io.exportREMeshFile(str(re9_output), dict(
+			options, exportBlendShapes=True, blendShapeExportMode=-1))
+		re9 = codec.readREMesh(str(re9_output))
+		recalc = re9.fileHeader.normalRecalcOffset
+		assert recalc and recalc + 16 == re9.fileHeader.blendShapesOffset
+		assert np.frombuffer(re9_output.read_bytes()[recalc:recalc + 4], "<u4")[0] == 1
+		body = re9.blendShapeHeader.blendShapeList[0]
+		assert (list(body.blendS), list(body.blendSSList)) == ([0, 0, 0], [0])
+		assert all(
+			entry.paramUnkn3 == 0 for target in body.blendTargetList
+			for entry in target.subMeshEntryList
+		)
+		re9_parsed = parse.ParsedREMesh()
+		re9_parsed.ParseREMesh(re9, {"importBlendShapes": True})
+		re9_submesh = re9_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0]
+		assert [key.blendShapeName for key in re9_submesh.blendShapeList] == ["Move"]
+		assert np.allclose(re9_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
+		print("PASS RE9 shape keys export with marker 1 and reimport", flush=True)
+
 		# MH Rise: pre-SF6 target over the whole submesh, every channel kept
 		# (an empty one too), packed rows (+ normal words without recalculation)
 		still = obj.shape_key_add(name="Still", from_mix=False)

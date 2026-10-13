@@ -20,12 +20,16 @@ bl_info = {
 # oniwots_blendshape_export: Onimusha WotS (.260209350) exportfile takes the Wilds
 # modes (NO / MODE1 / KEEPNORMALS).
 # mhrise_blendshape_export: MH Rise (.2109148288) exportfile takes NO / MODE1 /
-# KEEPNORMALS (MODE0 exports as MODE1).
+# KEEPNORMALS.
+# re9_blendshape_export: RE9 (.250925211) exportfile exports shape keys for any
+# shapeKeyExportMode except NO, always as MODE1.
+# Version 2: shapeKeyExportMode has no MODE0 (marker 0) any more.
 REME_FEATURES = {
-	"wilds_blendshape_export": 1,
+	"wilds_blendshape_export": 2,
 	"re4_blendshape_export": 1,
-	"oniwots_blendshape_export": 1,
-	"mhrise_blendshape_export": 1,
+	"oniwots_blendshape_export": 2,
+	"mhrise_blendshape_export": 2,
+	"re9_blendshape_export": 1,
 }
 
 import bpy
@@ -1065,14 +1069,9 @@ class ExportREMesh(Operator, ExportHelper):
 				"Do not export Blender shape keys or Wilds blendshape data. Alternatevly, if exporting shapekeys, you can use the prefix 'DUMMY_' for shapekey names, or untick (mute) them, to exclude export of them"
 			),
 			(
-				"MODE0",
-				"?broken",
-				"NOT RECOMMENDED: writes normal-recalc marker 0, which vanilla meshes never use. In game it darkened faces under side/back light"
-			),
-			(
 				"MODE1",
-				"Recalculate Normals",
-				"Writes normal-recalc marker 1, as vanilla body/armor meshes do. The game recalculates normals from the deformed geometry, so authored custom normals are replaced by recalculated ones"
+				"Recalculate Normals (in game)",
+				"Writes normal-recalc tables, as vanilla faces and armor do. The game recalculates normals from the deformed geometry at runtime, so authored custom normals are replaced by recalculated ones"
 			),
 			(
 				"KEEPNORMALS",
@@ -1222,15 +1221,15 @@ class ExportREMesh(Operator, ExportHelper):
 		limitRow.prop(self,"limitTotalCount", text="Max Weights")
 		row5 = layout.row()
 		row5.prop(self,"normalizeWeights")
-		if self.filename_ext in (".241111606", ".221108797", ".260209350", ".2109148288"):
+		if self.filename_ext in (".241111606", ".221108797", ".260209350", ".2109148288", ".250925211"):
 					row = layout.row()
 					split = row.split(factor=0.48)
 					split.label(text="Export Shapekeys?")
 					split.prop(self, "shapeKeyExportMode", text="")
 					if self.filename_ext == ".221108797":
 						layout.label(text="RE4: one layout, any choice except No exports", icon="INFO")
-					elif self.filename_ext == ".2109148288" and self.shapeKeyExportMode == "MODE0":
-						layout.label(text="MH Rise: exported as Recalculate Normals", icon="INFO")
+					elif self.filename_ext == ".250925211" and self.shapeKeyExportMode == "KEEPNORMALS":
+						layout.label(text="RE9: exported as Recalculate Normals", icon="INFO")
 
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
@@ -1246,17 +1245,18 @@ class ExportREMesh(Operator, ExportHelper):
 			return{"CANCELLED"}
 
 		# Blendshape export is implemented for Monster Hunter Wilds, Onimusha WotS
-		# (same modes), MH Rise (Recalculate / Keep Normals) and RE4.
+		# and MH Rise (Recalculate / Keep Normals), RE9 (Recalculate only) and RE4.
 		# Keep the UI/property vocabulary generic so other game handlers can be
 		# added later without renaming the shared export plumbing.
 		shapeKeyExportSelection = self.shapeKeyExportMode
-		if meshVersion in (241111606, 260209350):
-			exportBlendShapes = shapeKeyExportSelection != "NO"
-			blendShapeExportMode = {"MODE0": 0, "KEEPNORMALS": -1}.get(shapeKeyExportSelection, 1)
-		elif meshVersion == 2109148288:
-			# MH Rise: normal-recalc tables or per-row shape normals; no mode 0.
+		if meshVersion in (241111606, 260209350, 2109148288):
+			# Normal-recalc tables or per-row shape normals.
 			exportBlendShapes = shapeKeyExportSelection != "NO"
 			blendShapeExportMode = -1 if shapeKeyExportSelection == "KEEPNORMALS" else 1
+		elif meshVersion == 250925211:
+			# RE9 has no vanilla keep-normals mesh: always Recalculate Normals.
+			exportBlendShapes = shapeKeyExportSelection != "NO"
+			blendShapeExportMode = 1
 		elif meshVersion == 221108797:
 			# RE4 has a single blendshape layout; the Wilds modes do not apply.
 			exportBlendShapes = shapeKeyExportSelection != "NO"

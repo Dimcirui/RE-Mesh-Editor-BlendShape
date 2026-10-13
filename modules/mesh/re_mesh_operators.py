@@ -299,6 +299,8 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 					default = getBatchMeshWeightLimitDefault(item.path)
 				try:
 					value = collection.get("BatchExport_" + name, default)
+					if name == "shapeKeyExportMode" and value == "MODE0":
+						value = "MODE1"  # marker 0 was removed: it recalculates no LOD
 					if name == "limitTotalCount":
 						setBatchMeshWeightLimit(item, value, "BatchExport_" + name in collection)
 					else:
