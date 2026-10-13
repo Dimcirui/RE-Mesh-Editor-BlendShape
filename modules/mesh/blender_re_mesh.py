@@ -38,21 +38,31 @@ import numpy as np
 timeFormat = "%d"
 rotateNeg90Matrix = Matrix.Rotation(radians(-90.0), 4, 'X')
 rotate90Matrix = Matrix.Rotation(radians(90.0), 4, 'X')
+TRIANGULATE_NORMALS_ATTRIBUTE = "_reme_corner_normal"
+
+
 def triangulateMesh(mesh):
-     #BMesh triangulation screws up normals, so save them and reset them after triangulation
-    #custom_normals = None
-    #if mesh.has_custom_normals:
-    #    custom_normals = [0.0]*len(mesh.vertices)
-    #    for vertex in mesh.vertices:
-    #        custom_normals[vertex.index] = vertex.normal.copy()
+    # Custom normals are stored relative to each corner's edges, so splitting
+    # quads swings stylised ones (up to ~90 degrees). Carry the corner normals
+    # through bmesh in a corner attribute and set them back afterwards.
+    keepNormals = bpy.app.version >= (4, 1, 0) and mesh.has_custom_normals
+    if keepNormals:
+        normals = np.empty(len(mesh.loops) * 3, dtype=np.float32)
+        mesh.corner_normals.foreach_get("vector", normals)
+        attribute = mesh.attributes.new(TRIANGULATE_NORMALS_ATTRIBUTE, "FLOAT_VECTOR", "CORNER")
+        attribute.data.foreach_set("vector", normals)
 
     bm = bmesh.new()
     bm.from_mesh(mesh)
     bmesh.ops.triangulate(bm, faces = bm.faces[:])
     bm.to_mesh(mesh)
     bm.free()
-    #if custom_normals:
-        #mesh.normals_split_custom_set_from_vertices(custom_normals)
+    if keepNormals:
+        attribute = mesh.attributes[TRIANGULATE_NORMALS_ATTRIBUTE]
+        normals = np.empty(len(mesh.loops) * 3, dtype=np.float32)
+        attribute.data.foreach_get("vector", normals)
+        mesh.attributes.remove(attribute)
+        mesh.normals_split_custom_set(normals.reshape(-1, 3).tolist())
 
 SIX_WEIGHT_GAME_NAMES = frozenset(("SF6", "MHWILDS", "PRAG", "MHS3", "ONIWOTS"))
 EXTENDED_WEIGHT_GAME_NAMES = frozenset(("MHWILDS", "PRAG", "MHS3", "ONIWOTS"))
