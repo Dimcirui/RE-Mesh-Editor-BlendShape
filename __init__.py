@@ -21,15 +21,15 @@ bl_info = {
 # modes (NO / MODE1 / KEEPNORMALS).
 # mhrise_blendshape_export: MH Rise (.2109148288) exportfile takes NO / MODE1 /
 # KEEPNORMALS.
-# re9_blendshape_export: RE9 (.250925211) exportfile exports shape keys for any
-# shapeKeyExportMode except NO, always as MODE1.
+# re9_blendshape_export: RE9 (.250925211) exportfile takes NO / MODE1 /
+# KEEPNORMALS (version 1 always exported MODE1).
 # Version 2: shapeKeyExportMode has no MODE0 (marker 0) any more.
 REME_FEATURES = {
 	"wilds_blendshape_export": 2,
 	"re4_blendshape_export": 1,
 	"oniwots_blendshape_export": 2,
 	"mhrise_blendshape_export": 2,
-	"re9_blendshape_export": 1,
+	"re9_blendshape_export": 2,
 }
 
 import bpy
@@ -1228,8 +1228,6 @@ class ExportREMesh(Operator, ExportHelper):
 					split.prop(self, "shapeKeyExportMode", text="")
 					if self.filename_ext == ".221108797":
 						layout.label(text="RE4: one layout, any choice except No exports", icon="INFO")
-					elif self.filename_ext == ".250925211" and self.shapeKeyExportMode == "KEEPNORMALS":
-						layout.label(text="RE9: exported as Recalculate Normals", icon="INFO")
 
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
@@ -1245,18 +1243,15 @@ class ExportREMesh(Operator, ExportHelper):
 			return{"CANCELLED"}
 
 		# Blendshape export is implemented for Monster Hunter Wilds, Onimusha WotS
-		# and MH Rise (Recalculate / Keep Normals), RE9 (Recalculate only) and RE4.
+		# MH Rise and RE9 (Recalculate / Keep Normals) and RE4.
 		# Keep the UI/property vocabulary generic so other game handlers can be
 		# added later without renaming the shared export plumbing.
 		shapeKeyExportSelection = self.shapeKeyExportMode
-		if meshVersion in (241111606, 260209350, 2109148288):
-			# Normal-recalc tables or per-row shape normals.
+		if meshVersion in (241111606, 260209350, 2109148288, 250925211):
+			# Normal-recalc tables or per-row shape normals. RE9 keep-normals: no
+			# vanilla mesh uses it yet, not tested in game.
 			exportBlendShapes = shapeKeyExportSelection != "NO"
 			blendShapeExportMode = -1 if shapeKeyExportSelection == "KEEPNORMALS" else 1
-		elif meshVersion == 250925211:
-			# RE9 has no vanilla keep-normals mesh: always Recalculate Normals.
-			exportBlendShapes = shapeKeyExportSelection != "NO"
-			blendShapeExportMode = 1
 		elif meshVersion == 221108797:
 			# RE4 has a single blendshape layout; the Wilds modes do not apply.
 			exportBlendShapes = shapeKeyExportSelection != "NO"

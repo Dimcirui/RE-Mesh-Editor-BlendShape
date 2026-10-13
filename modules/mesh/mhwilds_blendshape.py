@@ -61,6 +61,17 @@ SHIFTED_HEADER_VERSIONS = (
 )
 
 
+def _null_boundary(version, vertex_buffer_offset, payload_start):
+	"""Table boundaries of a buffer without canonical tables: 0 in Wilds, file
+	offset 0 (-vertexBufferOffset) in Onimusha, the payload start in RE9 (its
+	vanilla table-less buffers, e.g. the inline LODs of ch0100_10_00)."""
+	if int(version) == mesh_format.VERSION_ONIWOTS:
+		return (-int(vertex_buffer_offset)) & 0xFFFFFFFF
+	if int(version) == mesh_format.VERSION_RE9:
+		return int(payload_start) & 0xFFFFFFFF
+	return 0
+
+
 def _header_shift(version):
 	return 16 if int(version) in SHIFTED_HEADER_VERSIONS else 0
 
@@ -1842,9 +1853,10 @@ def finalize_mhwilds_export(
 	mesh_header.faceBufferOffset = (
 		mesh_header.vertexBufferOffset + mesh_header.vertexBufferSize
 	)
-	if keep_normals and int(version) == mesh_format.VERSION_ONIWOTS:
-		# Absent tables point at file offset 0, relative to the vertex buffer.
-		null_boundary = (-int(mesh_header.vertexBufferOffset)) & 0xFFFFFFFF
+	if keep_normals and int(version) in SHIFTED_HEADER_VERSIONS:
+		null_boundary = _null_boundary(
+			version, mesh_header.vertexBufferOffset, payload_start
+		)
 		mesh_header.vertexElementSize = _signed_short(null_boundary & 0xFFFF)
 		mesh_header.unkn1 = _signed_short((null_boundary >> 16) & 0xFFFF)
 		mesh_header.sunbreakSecondUnknown = (
@@ -2076,10 +2088,8 @@ def write_mhwilds_mesh(re_mesh, filepath):
 	)[0]
 	written_face_table_end = int(packed_boundaries & 0xFFFFFFFF)
 	written_payload_start = int(packed_boundaries >> 32)
-	# Absent tables: 0 in Wilds, file offset 0 (-vertexBufferOffset) in Onimusha.
-	null_boundary = (
-		(-int(re_mesh.meshBufferHeader.vertexBufferOffset)) & 0xFFFFFFFF
-		if version == mesh_format.VERSION_ONIWOTS else 0
+	null_boundary = _null_boundary(
+		version, re_mesh.meshBufferHeader.vertexBufferOffset, written_payload_start
 	)
 	no_tables = null_boundary and written_face_table_end == null_boundary
 	if no_tables:
