@@ -43,11 +43,23 @@ feature list, documentation and credits.
   - **locked** keys are applied to the exported mesh at their current value and are not exported as
     shape keys;
   - keys whose name starts with `DUMMY_` are also not exported (use them for previews).
+- Locked keys are baked with the authored normals turned by the surface's real turn. On meshes
+  whose normals are not stylised this is what Blender shows; on stylised normals it avoids the
+  swing Blender's custom normal decoding adds where a key shears the surface.
+- **Static Normals** (Shape Keys panel, *RE Export: Static Normals* for the active key,
+  *All* / *None* for every exported and locked key), for stylised faces whose shading is authored:
+  - an exported key stores the authored normals instead of normals turned by its deformation
+    (*Keep Custom Normals* export), so the key does not change the shading;
+  - a locked key is baked into the basis without changing its normals.
+
+  Saved on the shape keys as `RE_StaticNormals` by key name; renaming a key in the UI keeps its
+  flag. Off by default.
 
 **Other changes**
 
 - Triangulating quads and n-gons on export keeps custom normals as Blender shows them (stylised
   normals used to swing by up to ~90 degrees).
+
 - Onimusha: Way of the Sword mdf2 / tex support.
 - Faster export: vertex colors and UV layers are read in one pass instead of per corner
 - Fixes ported from the [TrueShadow01](https://github.com/TrueShadow01/REME-RE-Engine-Blender-Addon)

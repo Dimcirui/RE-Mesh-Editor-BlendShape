@@ -17,6 +17,7 @@ normalization, the Wilds normal-group byte mapping and game version tables.
 ```
 "<path to>/blender.exe" --background --factory-startup --python-exit-code 1 --python tests/test_meshfix_blender.py
 "<path to>/blender.exe" --background --factory-startup --python-exit-code 1 --python tests/test_export_reliability_blender.py
+"<path to>/blender.exe" --background --factory-startup --python-exit-code 1 --python tests/test_static_normals_blender.py
 ```
 
 - `test_meshfix_blender.py`: rotated custom normals on import, DD2 secondary
@@ -33,6 +34,12 @@ normalization, the Wilds normal-group byte mapping and game version tables.
   per-item options, UV validation (exported maps only, reference maps,
   non-finite/out-of-range UVs, UV-removing modifiers, Auto Solve on UV1),
   progress tracking in background mode and Preserve Original Material Table.
+- `test_static_normals_blender.py`: Static Normals operators (active key, All
+  skips muted / `DUMMY_` keys, None), flags following a rename, Wilds Keep
+  Normals export of a stylised quad sphere: Static key rows equal the base
+  normal, the same deltas without it turn the normals, locked keys bake the
+  authored normals turned by the surface while a Static locked key adds no
+  turn; a non-stylised sphere bakes to the baked shape's own normals.
 
 `--factory-startup` keeps your own preferences and add-ons out of the run, and
 nothing is saved. The tests enable the add-on from this folder, so run them

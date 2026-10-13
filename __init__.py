@@ -24,12 +24,18 @@ bl_info = {
 # re9_blendshape_export: RE9 (.250925211) exportfile takes NO / MODE1 /
 # KEEPNORMALS (version 1 always exported MODE1).
 # Version 2: shapeKeyExportMode has no MODE0 (marker 0) any more.
+# static_normals: per-key Static Normals, stored as Key["RE_StaticNormals"] =
+# {Blender key name: 1}; operators re_mesh.toggle_static_normals (active key) and
+# re_mesh.set_static_normals(static=True/False). Exported keys keep the authored
+# normals (Keep Normals export); locked keys bake positions only. Locked keys
+# without it bake with the authored normals turned by the surface.
 REME_FEATURES = {
 	"wilds_blendshape_export": 2,
 	"re4_blendshape_export": 1,
 	"oniwots_blendshape_export": 2,
 	"mhrise_blendshape_export": 2,
 	"re9_blendshape_export": 2,
+	"static_normals": 1,
 }
 
 import bpy
@@ -59,6 +65,11 @@ from .modules.mesh.re_mesh_operators import (
 	WM_OT_REBatchExporter,
 	WM_OT_SolveRepeatedUVs,
 	WM_OT_QuickBatchExport,
+	WM_OT_ToggleStaticNormals,
+	WM_OT_SetStaticNormals,
+	draw_static_normals,
+	register_static_normals,
+	unregister_static_normals,
 
 )
 from .modules.mesh.ui_re_mesh_panels import (
@@ -1771,7 +1782,9 @@ classes = [
 	WM_OT_REBatchExporter,
 	WM_OT_SolveRepeatedUVs,
 	WM_OT_QuickBatchExport,
-	
+	WM_OT_ToggleStaticNormals,
+	WM_OT_SetStaticNormals,
+
 	#mdf
 	ImportREMDF,
 	ExportREMDF,
@@ -2013,6 +2026,9 @@ def register():
 	
 	bpy.types.TOPBAR_MT_file_import.append(re_mesh_editor_import)
 	bpy.types.TOPBAR_MT_file_export.append(re_mesh_editor_export)
+	# Static Normals row under Blender's Shape Keys panel
+	bpy.types.DATA_PT_shape_keys.append(draw_static_normals)
+	register_static_normals()
 
 	#Blender 4.1 and higher drag and drop operators
 	if bpy.app.version >= (4, 1, 0):
@@ -2043,7 +2059,9 @@ def unregister():
 	
 	bpy.types.TOPBAR_MT_file_import.remove(re_mesh_editor_import)
 	bpy.types.TOPBAR_MT_file_export.remove(re_mesh_editor_export)
-	
+	bpy.types.DATA_PT_shape_keys.remove(draw_static_normals)
+	unregister_static_normals()
+
 	if bpy.app.version >= (4, 1, 0):
 		bpy.utils.unregister_class(MESH_FH_drag_import)
 		bpy.utils.unregister_class(MDF_FH_drag_import)

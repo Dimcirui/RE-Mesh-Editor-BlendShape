@@ -11,7 +11,8 @@ from bpy.props import (StringProperty,
                        FloatVectorProperty,
                        EnumProperty,
                        )
-from .blender_re_mesh import solveRepeatedUVs
+from .blender_re_mesh import (solveRepeatedUVs, hasStaticNormals, setStaticNormals,
+	STATIC_NORMALS_PROPERTY, DUMMY_SHAPEKEY_PREFIX)
 from .operation_progress import operation_scope
 from .re_mesh_propertyGroups import (ExporterNodePropertyGroup, MESH_UL_REExporterList,
 	getBatchMeshWeightLimitDefault, getBatchMeshWeightLimit, setBatchMeshWeightLimit)
@@ -29,6 +30,164 @@ _BATCH_MESH_FIX_DEFAULTS = {
 	"shapeKeyExportMode": "KEEPNORMALS",
 	"preserveMaterialTable": False,
 }
+
+
+def _active_shape_key(context):
+	"""The active non-basis shape key of the active mesh object, or None."""
+	obj = context.object
+	if obj is None or obj.type != "MESH" or obj.data.shape_keys is None:
+		return None
+	key = obj.active_shape_key
+	if key is None or key == obj.data.shape_keys.reference_key:
+		return None
+	return key
+
+
+def _static_normals_applies(key):
+	"""Static Normals only matter on keys that are exported or locked (baked)."""
+	return not key.mute and not str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+
+
+class WM_OT_ToggleStaticNormals(Operator):
+	bl_label = "Static Normals"
+	bl_idname = "re_mesh.toggle_static_normals"
+	bl_description = ("Keep this key's authored normals. Exported as a shape key, it stores the authored "
+		"normals instead of turning them with its deformation (Keep Normals export). Locked, it is baked "
+		"into the basis without changing its normals. For stylised faces whose shading is authored")
+	bl_options = {'UNDO'}
+
+	@classmethod
+	def poll(cls, context):
+		return _active_shape_key(context) is not None
+
+	def execute(self, context):
+		key = _active_shape_key(context)
+		data = context.object.data
+		setStaticNormals(data, key.name, not hasStaticNormals(data, key))
+		snapshotShapeKeyNames()
+		return {'FINISHED'}
+
+
+class WM_OT_SetStaticNormals(Operator):
+	bl_label = "Set Static Normals"
+	bl_idname = "re_mesh.set_static_normals"
+	bl_description = "Set Static Normals on every exported and locked shape key of the active mesh, or clear it from all keys"
+	bl_options = {'UNDO'}
+	static : BoolProperty(name = "Static", default = True)
+
+	@classmethod
+	def poll(cls, context):
+		obj = context.object
+		return obj is not None and obj.type == "MESH" and obj.data.shape_keys is not None
+
+	def execute(self, context):
+		data = context.object.data
+		keys = data.shape_keys
+		if self.static:
+			for key in keys.key_blocks:
+				if key != keys.reference_key and _static_normals_applies(key):
+					setStaticNormals(data, key.name, True)
+		elif keys.get(STATIC_NORMALS_PROPERTY) is not None:
+			del keys[STATIC_NORMALS_PROPERTY]
+		snapshotShapeKeyNames()
+		return {'FINISHED'}
+
+
+def draw_static_normals(self, context):
+	"""Static Normals row under Blender's Shape Keys panel."""
+	obj = context.object
+	if obj is None or obj.type != "MESH" or obj.data.shape_keys is None:
+		return
+	layout = self.layout
+	key = _active_shape_key(context)
+	if key is not None:
+		static = hasStaticNormals(obj.data, key)
+		row = layout.row()
+		row.active = _static_normals_applies(key)
+		row.operator(WM_OT_ToggleStaticNormals.bl_idname,
+			text="RE Export: Static Normals",
+			icon="CHECKBOX_HLT" if static else "CHECKBOX_DEHLT", depress=static)
+	row = layout.row(align=True)
+	row.operator(WM_OT_SetStaticNormals.bl_idname, text="Static Normals: All").static = True
+	row.operator(WM_OT_SetStaticNormals.bl_idname, text="None").static = False
+
+
+# Static Normals are keyed by key name, so a rename in the UI moves the flag.
+# Shape keys have no stable id: compare names by position with the last
+# snapshot and treat a slot whose old name vanished and whose new name is new
+# as renamed (reorders, additions and deletions do not match that).
+_shapeKeyNameSnapshot = {}
+_msgbusOwner = object()
+
+
+def snapshotShapeKeyNames():
+	_shapeKeyNameSnapshot.clear()
+	for keys in bpy.data.shape_keys:
+		if keys.get(STATIC_NORMALS_PROPERTY):
+			_shapeKeyNameSnapshot[keys.as_pointer()] = [key.name for key in keys.key_blocks]
+
+
+def migrateRenamedStaticNormals():
+	for keys in bpy.data.shape_keys:
+		flagged = keys.get(STATIC_NORMALS_PROPERTY)
+		old = _shapeKeyNameSnapshot.get(keys.as_pointer())
+		if not flagged or old is None:
+			continue
+		new = [key.name for key in keys.key_blocks]
+		oldNames, newNames = set(old), set(new)
+		for oldName, newName in zip(old, new):
+			if oldName != newName and oldName not in newNames and newName not in oldNames and oldName in flagged:
+				flagged[newName] = flagged[oldName]
+				del flagged[oldName]
+	snapshotShapeKeyNames()
+
+
+def _subscribe_shape_key_names():
+	bpy.msgbus.clear_by_owner(_msgbusOwner)
+	bpy.msgbus.subscribe_rna(
+		key=(bpy.types.ShapeKey, "name"),
+		owner=_msgbusOwner,
+		args=(),
+		notify=migrateRenamedStaticNormals,
+	)
+	snapshotShapeKeyNames()
+
+
+@bpy.app.handlers.persistent
+def _static_normals_load_post(*args):
+	_subscribe_shape_key_names()
+
+
+@bpy.app.handlers.persistent
+def _static_normals_undo_post(*args):
+	# Undo restores old names without a rename notification.
+	snapshotShapeKeyNames()
+
+
+_STATIC_NORMALS_HANDLERS = (
+	(bpy.app.handlers.load_post, _static_normals_load_post),
+	(bpy.app.handlers.undo_post, _static_normals_undo_post),
+	(bpy.app.handlers.redo_post, _static_normals_undo_post),
+)
+
+
+def register_static_normals():
+	for handlers, handler in _STATIC_NORMALS_HANDLERS:
+		handlers.append(handler)
+	# bpy.data is restricted while add-ons register
+	bpy.app.timers.register(_subscribe_shape_key_names, first_interval=0.0)
+
+
+def unregister_static_normals():
+	bpy.msgbus.clear_by_owner(_msgbusOwner)
+	for handlers, handler in _STATIC_NORMALS_HANDLERS:
+		if handler in handlers:
+			handlers.remove(handler)
+	if bpy.app.timers.is_registered(_subscribe_shape_key_names):
+		bpy.app.timers.unregister(_subscribe_shape_key_names)
+	_shapeKeyNameSnapshot.clear()
+
+
 class WM_OT_DeleteLoose(Operator):
 	bl_label = "Delete Loose Geometry"
 	bl_idname = "re_mesh.delete_loose"
