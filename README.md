@@ -59,7 +59,6 @@ feature list, documentation and credits.
 
 - Triangulating quads and n-gons on export keeps custom normals as Blender shows them (stylised
   normals used to swing by up to ~90 degrees).
-
 - Onimusha: Way of the Sword mdf2 / tex support.
 - Faster export: vertex colors and UV layers are read in one pass instead of per corner
 - Fixes ported from the [TrueShadow01](https://github.com/TrueShadow01/REME-RE-Engine-Blender-Addon)
