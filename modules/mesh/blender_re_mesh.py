@@ -17,7 +17,7 @@ import bpy
 import bmesh
 import os
 import json
-from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection
+from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection, unpin_shape_keys
 from .operation_progress import tracked_operation, stage as progress_stage
 from .material_table import KEY as MATERIAL_TABLE_KEY, decode_table, preserve_table
 from math import radians,floor,sqrt
@@ -2000,6 +2000,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				
 			if obj.type == "MESH" and not obj.get("MeshExportExclude") and selected:
 				subMeshCount += 1
+				unpin_shape_keys(obj)
 				cloneObj = track_object(obj.copy())
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh

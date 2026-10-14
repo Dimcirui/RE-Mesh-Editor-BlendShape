@@ -19,8 +19,14 @@ class ExportResources:
 		self.meshes = []
 		self.armatures = []
 		self.collection = None
+		self.pinnedShapeKeys = []
 
 	def cleanup(self):
+		for obj in self.pinnedShapeKeys:
+			try:
+				obj.show_only_shape_key = True
+			except ReferenceError:
+				pass
 		for obj in reversed(self.objects):
 			try:
 				bpy.data.objects.remove(obj, do_unlink=True)
@@ -87,6 +93,22 @@ def track_armature(armature):
 	if scope is not None:
 		scope.armatures.append(armature)
 	return armature
+
+
+def unpin_shape_keys(obj):
+	"""Turn off the shape key pin of obj until the export ends.
+
+	A pinned object (Shape Keys panel pin, show_only_shape_key) evaluates to its
+	active key alone and ignores every key value, so with the pin on Basis all
+	exported keys read as Basis, and with the pin on a key it is baked into the
+	exported base at full strength.
+	"""
+	if not obj.show_only_shape_key:
+		return
+	scope = _current_scope()
+	if scope is not None:
+		scope.pinnedShapeKeys.append(obj)
+	obj.show_only_shape_key = False
 
 
 def temporary_collection():
