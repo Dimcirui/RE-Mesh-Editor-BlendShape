@@ -791,7 +791,6 @@ class WM_OT_REBatchExporter(Operator):
 					row.label(text="Path is empty or missing the file version number on the end. ",icon = "ERROR")
 				if item.exportType == "MESH":
 					box.prop(item, "exportAllLODs")
-					# RE4 has one blendshape layout: any mode except No exports it.
 					if item.path.endswith((".241111606", ".221108797", ".260209350", ".2109148288")):
 						box.prop(item, "shapeKeyExportMode")
 					box.prop(item,"autoSolveRepeatedUVs")

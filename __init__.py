@@ -15,8 +15,9 @@ bl_info = {
 # Bump a version when its operator values or meaning change.
 # wilds_blendshape_export: exportfile takes shapeKeyExportMode NO / MODE1 / KEEPNORMALS,
 # KEEPNORMALS output verified in game.
-# re4_blendshape_export: RE4 (.221108797) exportfile exports shape keys for any
-# shapeKeyExportMode except NO (RE4 has a single layout).
+# re4_blendshape_export: RE4 (.221108797) exportfile takes NO / MODE1 / KEEPNORMALS /
+# KEEPNORMALS_SURFACE. Version 2: the Keep Normals modes write the no-recalc
+# layout (version 1 wrote MODE1 for any choice except NO).
 # oniwots_blendshape_export: Onimusha WotS (.260209350) exportfile takes the Wilds
 # modes (NO / MODE1 / KEEPNORMALS).
 # mhrise_blendshape_export: MH Rise (.2109148288) exportfile takes NO / MODE1 /
@@ -33,7 +34,7 @@ bl_info = {
 # key normals turned by the geometric surface turn).
 REME_FEATURES = {
 	"wilds_blendshape_export": 2,
-	"re4_blendshape_export": 1,
+	"re4_blendshape_export": 2,
 	"oniwots_blendshape_export": 2,
 	"mhrise_blendshape_export": 2,
 	"re9_blendshape_export": 2,
@@ -1245,8 +1246,6 @@ class ExportREMesh(Operator, ExportHelper):
 					split = row.split(factor=0.48)
 					split.label(text="Export Shapekeys?")
 					split.prop(self, "shapeKeyExportMode", text="")
-					if self.filename_ext == ".221108797":
-						layout.label(text="RE4: one layout, any choice except No exports", icon="INFO")
 
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
@@ -1266,15 +1265,12 @@ class ExportREMesh(Operator, ExportHelper):
 		# Keep the UI/property vocabulary generic so other game handlers can be
 		# added later without renaming the shared export plumbing.
 		shapeKeyExportSelection = self.shapeKeyExportMode
-		if meshVersion in (241111606, 260209350, 2109148288, 250925211):
+		if meshVersion in (241111606, 221108797, 260209350, 2109148288, 250925211):
 			# Normal-recalc tables or per-row shape normals. RE9 keep-normals: no
-			# vanilla mesh uses it yet, not tested in game.
+			# vanilla mesh uses it yet, not tested in game. RE4 keep-normals is
+			# vanilla chd000_00's layout, per-key normals not tested in game.
 			exportBlendShapes = shapeKeyExportSelection != "NO"
 			blendShapeExportMode = -1 if shapeKeyExportSelection in ("KEEPNORMALS", "KEEPNORMALS_SURFACE") else 1
-		elif meshVersion == 221108797:
-			# RE4 has a single blendshape layout; the Wilds modes do not apply.
-			exportBlendShapes = shapeKeyExportSelection != "NO"
-			blendShapeExportMode = 0
 		else:
 			exportBlendShapes = False
 			blendShapeExportMode = 0

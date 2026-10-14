@@ -20,6 +20,12 @@ parts reuse mhwilds_blendshape. Layout of the six vanilla faces surveyed
   on cha006, where vanilla keeps twins within 1 degree apart (99.4%); only
   exact-normal merging reproduces that, but Blender exports add 1-4 units of
   normal noise to vanilla's identical twins, so the 1 degree rule is kept.
+
+Keep Normals writes the no-recalc layout of vanilla chd000_00 (seen by the
+Funnyguysmz fork, not in our extract): unknFlag 0, normalRecalcOffset 0, no
+tables, and each 8-byte row is [Wilds packed 11/10/11 delta scaled by the
+target AABB, the shape's int8 normal]. The fork's in-game test repeated the
+base normal on every key; per-key normals are untested in game.
 """
 
 import struct
@@ -43,6 +49,12 @@ def _pack_rows(deltas):
 	return rows.tobytes()
 
 
+def _pack_keep_normal_rows(deltas, normals, aabb):
+	"""Keep-normals rows: packed delta word, then the shape's int8 normal word."""
+	words = np.frombuffer(wilds._pack_delta_rows(deltas, aabb), dtype="<u4")
+	return np.column_stack((words, wilds._pack_normal_rows(normals))).astype("<u4").tobytes()
+
+
 def _new_target(channel_count, runs, lo):
 	target = mesh_format.BlendTarget()
 	target.blendSSIndex = 0
@@ -54,26 +66,35 @@ def _new_target(channel_count, runs, lo):
 	return target
 
 
-def _group_deltas(submeshes, names):
-	"""Deltas of the given channels over one viscon group's global range."""
+def _group_deltas(submeshes, names, keep_normals=False):
+	"""Deltas (and with keep_normals the row normals) of the given channels
+	over one viscon group's global range."""
 	lo = min(int(info.vertexStartIndex) for _parsed, info, _count in submeshes)
 	hi = max(int(info.vertexStartIndex) + count for _parsed, info, count in submeshes)
 	valid = np.zeros(hi - lo, dtype=bool)
 	ranges = []
-	for _parsed, info, count in submeshes:
+	base = np.zeros((hi - lo, 3), dtype=np.float32) if keep_normals else None
+	for parsed_submesh, info, count in submeshes:
 		start = int(info.vertexStartIndex) - lo
 		valid[start:start + count] = True
 		ranges.append((start, start + count))
+		if keep_normals:
+			base[start:start + count] = wilds._base_normals(parsed_submesh, count)
 	channels = []
 	for name in names:
 		deltas = np.zeros((hi - lo, 3), dtype=np.float32)
+		normals = None if base is None else base.copy()
 		for parsed_submesh, info, count in submeshes:
 			start = int(info.vertexStartIndex) - lo
 			deltas[start:start + count] = wilds._normalized_deltas(
 				parsed_submesh, name, count
 			)
+			if normals is not None:
+				normals[start:start + count] = wilds._shape_normals(
+					parsed_submesh, name, base[start:start + count]
+				)
 		mask = np.any(np.abs(deltas) > wilds.EDIT_DELTA_THRESHOLD, axis=1)
-		channels.append((name, deltas, mask))
+		channels.append((name, deltas, mask, normals))
 	return lo, valid, ranges, channels
 
 
@@ -86,11 +107,11 @@ def _submesh_runs(mask, ranges):
 	return wilds._mask_runs(marked)
 
 
-def _build_body(lod, parsed_to_mesh_info, channel_order=None):
+def _build_body(lod, parsed_to_mesh_info, keep_normals, channel_order=None):
 	"""One blend body. LOD0 passes no order; higher LODs repeat LOD0's channels.
 
-	Returns (body, [(target, [(deltas, runs)])], names) or None when the LOD
-	has no usable shape keys.
+	Returns (body, [(target, [(deltas, normals, runs)])], names) or None when
+	the LOD has no usable shape keys. normals is None without keep_normals.
 	"""
 	groups = wilds._viscon_submeshes(lod, parsed_to_mesh_info)
 	if not groups:
@@ -98,7 +119,7 @@ def _build_body(lod, parsed_to_mesh_info, channel_order=None):
 	body = mesh_format.BlendShapeData()
 	body.padding1 = 0
 	body.padding2 = 0
-	body.unknFlag = 1
+	body.unknFlag = 0 if keep_normals else 1
 	body.aabbList = []
 	active = []
 	inactive = []
@@ -106,11 +127,13 @@ def _build_body(lod, parsed_to_mesh_info, channel_order=None):
 	for submeshes in groups:
 		if channel_order is None:
 			lo, valid, ranges, channels = _group_deltas(
-				submeshes, wilds._shape_names(submeshes)
+				submeshes, wilds._shape_names(submeshes), keep_normals
 			)
 			channels = [channel for channel in channels if channel[2].any()]
 		else:
-			lo, valid, ranges, channels = _group_deltas(submeshes, channel_order)
+			lo, valid, ranges, channels = _group_deltas(
+				submeshes, channel_order, keep_normals
+			)
 			if not any(channel[2].any() for channel in channels):
 				channels = []
 		covered = np.zeros(len(valid), dtype=bool)
@@ -129,13 +152,13 @@ def _build_body(lod, parsed_to_mesh_info, channel_order=None):
 			for start, end in runs:
 				covered[start:end] = True
 			body.aabbList.append(wilds._symmetric_aabb([
-				deltas[mask] for _name, deltas, mask in channels
+				deltas[mask] for _name, deltas, mask, _normals in channels
 			]))
 			active.append((
 				target,
-				[(deltas, runs) for _name, deltas, _mask in channels],
+				[(deltas, normals, runs) for _name, deltas, _mask, normals in channels],
 			))
-			names.extend(name for name, _deltas, _mask in channels)
+			names.extend(channel[0] for channel in channels)
 		rest = wilds._mask_runs(valid & ~covered)
 		for chunk_start in range(0, len(rest), wilds.MAX_TARGET_ENTRIES):
 			inactive.append(_new_target(
@@ -152,12 +175,13 @@ def _build_body(lod, parsed_to_mesh_info, channel_order=None):
 
 
 def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
-	"""Build the blend bodies, their name list and the float16 payload."""
+	"""Build the blend bodies, their name list and the payload."""
 	lods = wilds._list_or_empty(getattr(parsed_mesh, "mainMeshLODList", None))
 	if not lods:
 		return None
+	keep_normals = wilds._keeps_normals(parsed_mesh=parsed_mesh)
 	wilds._drop_empty_shapes(lods)
-	built = _build_body(lods[0], parsed_to_mesh_info)
+	built = _build_body(lods[0], parsed_to_mesh_info, keep_normals)
 	if built is None:
 		return None
 	bodies = [built]
@@ -178,7 +202,9 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 				sorted(lod_names - set(base_names))
 			)
 		else:
-			built = _build_body(lod, parsed_to_mesh_info, channel_order=base_names)
+			built = _build_body(
+				lod, parsed_to_mesh_info, keep_normals, channel_order=base_names
+			)
 			if built is None:
 				break
 			if len(built[1]) != 1:
@@ -208,7 +234,7 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 			body.blendSSList = list(range(len(names)))
 			remap_names.extend(f"{name}_LOD{body_index}" for name in names)
 		channel_base = 0
-		for target, rows in active:
+		for target_index, (target, rows) in enumerate(active):
 			target.blendSSIndex = channel_base if body_index == 0 else 0
 			channel_base += int(target.blendShapeNum)
 			target_rows = sum(int(entry.vertCount) for entry in target.subMeshEntryList)
@@ -216,9 +242,15 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 			for entry in target.subMeshEntryList:
 				entry.vertOffset = row + prefix
 				prefix += int(entry.vertCount)
-			for deltas, runs in rows:
+			aabb = body.aabbList[target_index]
+			for deltas, normals, runs in rows:
 				for start, end in runs:
-					payload.extend(_pack_rows(deltas[start:end]))
+					if keep_normals:
+						payload.extend(_pack_keep_normal_rows(
+							deltas[start:end], normals[start:end], aabb
+						))
+					else:
+						payload.extend(_pack_rows(deltas[start:end]))
 			row += target_rows * int(target.blendShapeNum)
 		header.blendShapeList.append(body)
 	header.count = len(header.blendShapeList)
@@ -227,6 +259,7 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		"header": header,
 		"shapeRemapNames": remap_names,
 		"payload": bytes(payload),
+		"keepNormals": keep_normals,
 	}
 
 
@@ -245,8 +278,15 @@ def _lod0_range(re_mesh):
 	return lod, vertex_count, index_count
 
 
-def reserve_re4_normal_recalc(re_mesh, current_offset):
-	"""Reserve the LOD0 canonical-table section; returns the offset after it."""
+def reserve_re4_normal_recalc(re_mesh, current_offset, keep_normals=False):
+	"""Reserve the LOD0 canonical-table section; returns the offset after it.
+
+	The keep-normals layout has no section: normalRecalcOffset stays 0.
+	"""
+	re_mesh._re4KeepNormals = bool(keep_normals)
+	if keep_normals:
+		re_mesh.fileHeader.normalRecalcOffset = 0
+		return wilds._align16(current_offset)
 	_lod, vertex_count, index_count = _lod0_range(re_mesh)
 	offset = wilds._align16(current_offset)
 	size = (
@@ -288,6 +328,9 @@ def finalize_re4_export(re_mesh):
 	payload_start = int(re_mesh._re4BlendPayloadStart)
 	mesh_header.vertexElementSize = wilds._signed_short(payload_start & 0xFFFF)
 	mesh_header.unkn1 = wilds._signed_short((payload_start >> 16) & 0xFFFF)
+	if getattr(re_mesh, "_re4KeepNormals", False):
+		re_mesh._re4NormalRecalcBlob = None
+		return
 
 	lod, vertex_count, _index_count = _lod0_range(re_mesh)
 	lod_range = {"lod": lod, "baseVertex": 0, "vertexCount": vertex_count, "baseFace": 0}

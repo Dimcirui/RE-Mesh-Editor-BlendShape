@@ -586,14 +586,20 @@ def _parseLODStructureWithBlendShapes(
 
 		if blendData is not None:
 			# RE4 rows are absolute float16 deltas; Wilds rows are packed and
-			# scaled by the target AABB.
-			isRE4 = int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
+			# scaled by the target AABB. RE4 no-recalc bodies (vanilla chd000_00:
+			# unknFlag 0, normalRecalcOffset 0) use Wilds' keep-normals rows.
+			isRE4Float16 = int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
+			if isRE4Float16 and (
+				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
+				and int(getattr(blendData, "unknFlag", 1)) == 0
+			):
+				isRE4Float16 = False
 			is888 = int(getattr(blendData, "padding1", 0) or 0) == 3
 			isMHRSB = int(reMesh.meshVersion) in MHRSB_BLEND_SHAPE_MESH_VERSIONS
 			if isMHRSB:
 				# Decoded per body by _parseMHRSBBlendShapes below.
 				reader = None
-			elif isRE4:
+			elif isRE4Float16:
 				reader = ReadBlendShapeRE4Buffer
 			elif is888:
 				reader = ReadBlendShape888Buffer
@@ -640,7 +646,7 @@ def _parseLODStructureWithBlendShapes(
 			# Wilds no-recalc meshes (normalRecalcOffset == 0) and bodies with
 			# padding1 == 1 store 8 bytes per vertex: [position delta, second row].
 			# vertOffset counts vertices, so keep only the position rows.
-			if not isRE4 and not isMHRSB and (
+			if not isRE4Float16 and not isMHRSB and (
 				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
 				or int(getattr(blendData, "padding1", 0) or 0) == 1
 			):
@@ -831,7 +837,7 @@ def _parseLODStructureWithBlendShapes(
 							)
 							count = int(entry.vertCount)
 							deltas = decoded[start:start + count].copy()
-							if not isRE4:
+							if not isRE4Float16:
 								deltas = ApplyBlendShapeAABBToDecodedRows(
 									deltas,
 									blendData.aabbList[targetIndex],

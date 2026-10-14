@@ -146,7 +146,7 @@ BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE4", "ONIWOTS", "MHRSB", "RE9
 # Games written by the unified Wilds blendshape exporter.
 UNIFIED_BLEND_SHAPE_GAMES = frozenset(("MHWILDS", "ONIWOTS", "RE9"))
 # Games whose export takes the Recalculate Normals / Keep Custom Normals modes.
-BLEND_SHAPE_MODE_GAMES = UNIFIED_BLEND_SHAPE_GAMES | {"MHRSB"}
+BLEND_SHAPE_MODE_GAMES = UNIFIED_BLEND_SHAPE_GAMES | {"MHRSB", "RE4"}
 BLEND_SHAPE_IMPORT_GAMES = BLEND_SHAPE_EXPORT_GAMES
 DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
 
