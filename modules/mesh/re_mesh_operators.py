@@ -27,7 +27,7 @@ _BATCH_MESH_FIX_DEFAULTS = {
 	"normalizeWeights": True,
 	"limitTotal": False,
 	"limitTotalCount": 8,
-	"shapeKeyExportMode": "KEEPNORMALS",
+	"shapeKeyExportMode": "KEEPNORMALS_SURFACE",
 	"preserveMaterialTable": False,
 }
 
@@ -603,7 +603,7 @@ class WM_OT_REBatchExporter(Operator):
 						normalizeWeights = getattr(exportItem, "normalizeWeights", True),
 						limitTotal = getattr(exportItem, "limitTotal", False),
 						limitTotalCount = weightLimit,
-						shapeKeyExportMode = getattr(exportItem, "shapeKeyExportMode", "KEEPNORMALS"),
+						shapeKeyExportMode = getattr(exportItem, "shapeKeyExportMode", "KEEPNORMALS_SURFACE"),
 						rotate90 = exportItem.rotate90,
 						useBlenderMaterialName = exportItem.useBlenderMaterialName,
 						preserveBoneMatrices = exportItem.preserveBoneMatrices,

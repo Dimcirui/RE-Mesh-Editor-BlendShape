@@ -46,10 +46,15 @@ feature list, documentation and credits.
 - Locked keys are baked with the authored normals turned by the surface's real turn. On meshes
   whose normals are not stylised this is what Blender shows; on stylised normals it avoids the
   swing Blender's custom normal decoding adds where a key shears the surface.
+- Export modes for shape keys: *Recalculate Normals (in game)*, *Keep Normals (as in Blender)*
+  (each key's normals as Blender shows them with the key applied) and *Keep Normals (surface turn)*,
+  the default: the authored normals turn only with the real turn of the surface, so stylised
+  normals keep their offset where a key shears the mesh. Both Keep Normals modes give the same
+  result on meshes whose normals are not stylised (all vanilla meshes).
 - **Static Normals** (Shape Keys panel, *RE Export: Static Normals* for the active key,
   *All* / *None* for every exported and locked key), for stylised faces whose shading is authored:
   - an exported key stores the authored normals instead of normals turned by its deformation
-    (*Keep Custom Normals* export), so the key does not change the shading;
+    (*Keep Normals* export), so the key does not change the shading;
   - a locked key is baked into the basis without changing its normals.
 
   Saved on the shape keys as `RE_StaticNormals` by key name; renaming a key in the UI keeps its

@@ -407,6 +407,7 @@ def _build_blend_shape_entries_for_export(
 	evaluatedBasisMesh,
 	exportShapeKeys=True,
 	exportNormals=None,
+	surfaceTurn=False,
 ):
 	"""Evaluate each Blender key through the same geometry path as the basis.
 
@@ -414,6 +415,8 @@ def _build_blend_shape_entries_for_export(
 	`normals`: the row normal after the key is applied. The basis-to-key turn
 	of the matching evaluated corner is applied to the exported normal, so
 	authored normals stay authored and only the deformation is added.
+	surfaceTurn takes the turn from the geometric normals instead of Blender's
+	decoded custom normals, which swing where a key shears stylised normals.
 	"""
 	if (
 		not _game_supports_blend_shapes(gameName)
@@ -445,6 +448,9 @@ def _build_blend_shape_entries_for_export(
 		if wantNormals:
 			basisCornerVertices, basisCornerNormals = _corner_normal_arrays(
 				rawBasisMesh
+			)
+			basisTurnNormals = (
+				_geometric_corner_normals(rawBasisMesh) if surfaceTurn else basisCornerNormals
 			)
 		if any(
 			len(face.vertices) != 3 for face in rawBasisMesh.polygons
@@ -509,11 +515,13 @@ def _build_blend_shape_entries_for_export(
 						shapeMesh
 					)
 					if np.array_equal(shapeCornerVertices, basisCornerVertices):
+						if surfaceTurn:
+							shapeCornerNormals = _geometric_corner_normals(shapeMesh)
 						shapeNormals = baseNormals.copy()
 						corners = rowCorners[hasCorner]
 						shapeNormals[hasCorner] = _rotate_normals(
 							baseNormals[hasCorner],
-							basisCornerNormals[corners],
+							basisTurnNormals[corners],
 							shapeCornerNormals[corners],
 						)
 					else:
@@ -2697,6 +2705,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 							and options.get("blendShapeExportMode") == -1
 							else None
 						),
+						surfaceTurn=options.get("shapeKeyNormalTurn") == "SURFACE",
 					)
 				)
 				if gameName == "MHWILDS":

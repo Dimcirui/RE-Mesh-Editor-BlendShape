@@ -181,11 +181,16 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 			),
 			(
 				"KEEPNORMALS",
-				"Keep Custom Normals",
+				"Keep Normals (as in Blender)",
 				"Vanilla no-recalc layout (as on the Seikret): no normal-recalc marker, no recalc tables, 8-byte delta rows. The game keeps the authored custom normals while shape keys deform the geometry"
 			),
+			(
+				"KEEPNORMALS_SURFACE",
+				"Keep Normals (surface turn)",
+				"Same layout as Keep Normals (as in Blender). Each key's normals turn only with the real turn of the surface, so stylised custom normals keep their offset where a key shears or squashes the mesh (eyelids, lips) instead of following Blender's re-decoded normals. On meshes whose normals are not stylised the result is the same"
+			),
 		],
-		default = "KEEPNORMALS"
+		default = "KEEPNORMALS_SURFACE"
 	)
 	useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",

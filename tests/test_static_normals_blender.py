@@ -151,12 +151,13 @@ def read_export(frm, path):
 	return P, N, channels
 
 
-def export(brm, collection, path):
+def export(brm, collection, path, surface=False):
 	options = {"targetCollection": collection.name, "selectedOnly": False, "exportAllLODs": False,
 		"exportBlendShapes": True, "blendShapeExportMode": -1, "rotate90": True,
 		"useBlenderMaterialName": False, "preserveBoneMatrices": False, "exportBoundingBoxes": False,
 		"autoSolveRepeatedUVs": False, "preserveSharpEdges": False, "splitLoopVertices": True,
-		"limitTotal": False, "limitTotalCount": 6, "normalizeWeights": False}
+		"limitTotal": False, "limitTotalCount": 6, "normalizeWeights": False,
+		"shapeKeyNormalTurn": "SURFACE" if surface else "BLENDER"}
 	return brm.exportREMeshFile(str(path), options)
 
 
@@ -246,6 +247,28 @@ def main(scratch):
 	geometric = unit(vertex_normals_at(obj, baked)) @ R.T
 	cosine = (unit(N) * geometric[rowVertex]).sum(1)
 	check("non-stylised: baked normals follow the baked shape", cosine.min() > 0.995, f"min cos {cosine.min():.4f}")
+	surfacePath = Path(scratch) / "plain_body_surface.mesh.241111606"
+	check("plain export, surface turn", export(brm, collection, surfacePath, surface=True) is True)
+	_, _, surfaceChannels = read_export(frm, surfacePath)
+	same = all(set(channels[n]) == set(surfaceChannels[n]) and all(np.abs(channels[n][r] - surfaceChannels[n][r]).max() <= 1 for r in channels[n]) for n in channels)
+	check("non-stylised: surface turn rows equal Keep Normals (as in Blender) within 1 step", same)
+	bpy.data.collections.remove(collection)
+
+	# Stylised sphere, surface turn: key rows = authored x geometric turn of the key
+	collection, obj, custom = build_sphere("surface_face", stylised=True)
+	for keyName in ("lockA", "lockS"):
+		key = obj.data.shape_keys.key_blocks[keyName]
+		key.lock_shape = False
+		key.value = 0.0
+	path = Path(scratch) / "surface_face.mesh.241111606"
+	check("stylised export, surface turn", export(brm, collection, path, surface=True) is True)
+	P, N, channels = read_export(frm, path)
+	basis = key_positions(obj, {})
+	rowVertex = rows_to_vertices(P, basis)
+	expected = rotate(custom, unit(vertex_normals_at(obj, basis)), unit(vertex_normals_at(obj, key_positions(obj, {"squash": 1.0})))) @ R.T
+	rows = channels.get("squash", {})
+	cos = np.array([(unit(sec) * expected[rowVertex[r]]).sum() for r, sec in rows.items()])
+	check("surface turn: key rows are authored normals turned by the surface", len(cos) and cos.min() > 0.99, f"{len(cos)} rows, min cos {cos.min():.4f}")
 	bpy.data.collections.remove(collection)
 
 
