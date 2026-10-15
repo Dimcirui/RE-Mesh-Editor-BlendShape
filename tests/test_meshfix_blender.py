@@ -277,6 +277,44 @@ def main():
 		assert [reread.rawNameList[i] for i in reread.blendShapeNameRemapList] == long_names
 	print("PASS shape key names longer than 63 bytes survive import and export", flush=True)
 
+	# Blender caps bone and vertex group names at 63 bytes, not characters: a
+	# CJK name reaches the limit at 22 characters and must be hashed on import
+	# and restored on export.
+	cjk_collection = bpy.data.collections.new("LongChineseBoneNames")
+	bpy.context.scene.collection.children.link(cjk_collection)
+	root_name = "根" * 21  # 63 bytes, still fits
+	long_name = "左手食指第一关节辅助骨骼左手食指第一关节辅助骨骼"  # 24 characters, 72 bytes
+	skeleton = parse.Skeleton()
+	for index, (name, parent_index) in enumerate([(root_name, -1), (long_name, 0)]):
+		bone = parse.ParsedBone()
+		bone.boneName, bone.boneIndex, bone.parentIndex = name, index, parent_index
+		bone.symmetryBoneIndex, bone.nextSiblingIndex, bone.nextChildIndex = index, -1, -1
+		identity = [[float(row == column) for column in range(4)] for row in range(4)]
+		bone.worldMatrix.matrix, bone.localMatrix.matrix, bone.inverseMatrix.matrix = identity, identity, identity
+		skeleton.boneList.append(bone)
+	cjk_armature = mesh_io.importSkeleton(skeleton, "CJKSkeleton", cjk_collection, False, "")
+	hashed_name = "#HASHED_" + str(mesh_io.hashUTF8(long_name))
+	assert root_name in cjk_armature.data.bones and hashed_name in cjk_armature.data.bones, list(cjk_armature.data.bones.keys())
+	assert cjk_armature.data.bones[hashed_name].parent.name == root_name
+	cjk_obj = mesh_io.importMesh(
+		"LOD_0_Group_0_Sub_0__CJKMat", vertexList=vertices, faceList=faces,
+		UV0List=[(0, 0), (1, 0), (0, 1)], boneNameList=[root_name, long_name],
+		vertexGroupWeightList=[[.6, .4, 0, 0, 0, 0, 0, 0]] * 3,
+		vertexGroupBoneIndicesList=indices,
+		material=bpy.data.materials.new("CJKMat"), armature=cjk_armature,
+		collection=cjk_collection, rotate90=False)
+	assert {group.name for group in cjk_obj.vertex_groups} == {root_name, hashed_name}
+	with tempfile.TemporaryDirectory(prefix="meshfix-cjkbones-") as temporary:
+		cjk_output = Path(temporary) / "cjk-bones.mesh.221108797"
+		assert mesh_io.exportREMeshFile(str(cjk_output), dict(
+			options, targetCollection=cjk_collection.name))
+		parsed = parse.ParsedREMesh()
+		parsed.ParseREMesh(codec.readREMesh(str(cjk_output)))
+		assert [bone.boneName for bone in parsed.skeleton.boneList] == [root_name, long_name]
+		submesh = parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0]
+		assert np.allclose(np.asarray(submesh.weightList)[:, :2], [[.6, .4]] * 3, atol=.004), submesh.weightList
+	print("PASS Chinese bone names longer than 63 bytes are hashed on import and restored on export", flush=True)
+
 	dd2_collection = bpy.data.collections.new("DD2WeightExportChecks")
 	bpy.context.scene.collection.children.link(dd2_collection)
 	armature_data = bpy.data.armatures.new("DD2CheckSkeleton")
