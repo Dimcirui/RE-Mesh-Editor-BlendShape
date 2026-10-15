@@ -32,8 +32,8 @@ feature list, documentation and credits.
 |---|---|---|---|
 | Monster Hunter Wilds | yes | yes |  |
 | Monster Hunter Rise: Sunbreak | yes | yes | Not yet tested in game. |
-| Resident Evil 4 Remake | yes | yes | Not yet tested in game. |
-| Onimusha: Way of the Sword | yes | yes | Not yet tested in game. |
+| Resident Evil 4 Remake | yes | yes |  |
+| Onimusha: Way of the Sword | yes | yes |  |
 | Resident Evil Requiem (RE9) | yes | yes | Not yet tested in game. |
 
 - Shape key names longer than Blender's 63-byte limit keep their full game name through import
