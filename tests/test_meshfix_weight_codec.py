@@ -48,6 +48,18 @@ class WeightCodecChecks(unittest.TestCase):
 		self.assertEqual(normalized[1].sum(), 0)
 		self.assertEqual(raw[1].sum(), 0)
 
+	def test_small_weights_never_quantize_to_zero(self):
+		# Rise skinning stops at the first zero weight: [76, 0, 179] lost its third bone
+		# and the vertex was pulled toward the world origin (pl279 hair, 2026-10-16)
+		weights = [[.298, .0035, .6985, 0, 0, 0, 0, 0], [.0018, .1059, .8923, 0, 0, 0, 0, 0]]
+		for normalizeWeights in (True, False):
+			with self.subTest(normalizeWeights=normalizeWeights):
+				rows = codec.QuantizeWeightArrayToBytes(weights, normalizeWeights).astype(int)
+				self.assertTrue(np.all(rows[:, :3] > 0))
+				self.assertTrue(np.all(rows.sum(axis=1) <= 255))
+		rows = codec.QuantizeWeightArrayToBytes(weights, True).astype(int)
+		np.testing.assert_array_equal(rows.sum(axis=1), [255, 255])
+
 	def test_weight_writer_binds_empty_rows_to_slot_zero(self):
 		# NSA behavior: an unweighted vertex gets 100% on slot 0 instead of an all-zero row
 		weights = np.array([[.25, .25, 0, 0, 0, 0, 0, 0], [0] * 8])

@@ -1940,6 +1940,26 @@ def _fillEmptyWeightRows(quantizedWeights):
 		quantizedWeights[emptyRows, 0] = 255
 	return quantizedWeights
 
+def _keepNonZeroWeights(quantizedWeights, sourceWeights):
+	# A weight that was non-zero in Blender must not quantize to 0 while a later slot
+	# stays non-zero: Rise's skinning stops at the first zero weight, so [76, 0, 179]
+	# drops the third bone and the vertex is pulled toward the world origin in game.
+	# Raise such weights to 1 and take the byte back from the row's largest weight.
+	lostRows = np.nonzero(((sourceWeights > 0) & (quantizedWeights == 0)).any(axis=1))[0]
+	for rowIndex in lostRows:
+		row = quantizedWeights[rowIndex]
+		lost = (sourceWeights[rowIndex] > 0) & (row == 0)
+		row[lost] = 1
+		excess = int(row.sum()) - 255
+		while excess > 0:
+			largest = int(np.argmax(row))
+			if row[largest] <= 1:
+				break
+			take = min(excess, int(row[largest]) - 1)
+			row[largest] -= take
+			excess -= take
+	return quantizedWeights
+
 def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True, fillEmptyRows=False):
 	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,
 	# (The one that normalizes the Blender float values before the byte conversion.)
@@ -1953,6 +1973,7 @@ def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True, fillEmpt
 	if not normalizeWeights:
 		quantizedWeights = np.rint(boneWeightsArray * 255.0)
 		quantizedWeights = np.clip(quantizedWeights, 0, 255).astype(np.int32)
+		quantizedWeights = _keepNonZeroWeights(quantizedWeights, boneWeightsArray)
 		if fillEmptyRows:
 			quantizedWeights = _fillEmptyWeightRows(quantizedWeights)
 		return quantizedWeights.astype("<B")
@@ -1996,6 +2017,7 @@ def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True, fillEmpt
 					remaining -= 1
 
 	quantizedWeights = np.clip(quantizedWeights, 0, 255)
+	quantizedWeights = _keepNonZeroWeights(quantizedWeights, boneWeightsArray)
 	if fillEmptyRows:
 		quantizedWeights = _fillEmptyWeightRows(quantizedWeights)
 	return quantizedWeights.astype("<B")
