@@ -585,15 +585,14 @@ def _parseLODStructureWithBlendShapes(
 			blendData = reMesh.blendShapeHeader.blendShapeList[lodIndex]
 
 		if blendData is not None:
-			# RE4 rows are absolute float16 deltas; Wilds rows are packed and
-			# scaled by the target AABB. RE4 no-recalc bodies (vanilla chd000_00:
-			# unknFlag 0, normalRecalcOffset 0) use Wilds' keep-normals rows.
-			isRE4Float16 = int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
-			if isRE4Float16 and (
-				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
-				and int(getattr(blendData, "unknFlag", 1)) == 0
-			):
-				isRE4Float16 = False
+			# RE4 bodies with unknFlag 1 store absolute float16 deltas; unknFlag 0
+			# bodies use Wilds' packed rows scaled by the target AABB: 4 bytes
+			# with normal-recalc tables (vanilla chfe00_10, chb500_10), 8-byte
+			# keep-normals rows without them (vanilla chd000_00).
+			isRE4Float16 = (
+				int(reMesh.meshVersion) in RE4_BLEND_SHAPE_MESH_VERSIONS
+				and int(getattr(blendData, "unknFlag", 1)) != 0
+			)
 			is888 = int(getattr(blendData, "padding1", 0) or 0) == 3
 			isMHRSB = int(reMesh.meshVersion) in MHRSB_BLEND_SHAPE_MESH_VERSIONS
 			if isMHRSB:
