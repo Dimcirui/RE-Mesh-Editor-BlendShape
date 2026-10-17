@@ -166,8 +166,8 @@ def _build_body(lod, parsed_to_mesh_info, keep_normals, channel_order=None):
 			))
 	if not active:
 		return None
-	if not inactive:
-		inactive.append(_new_target(0, [], 0))
+	# A group the active runs cover whole gets no inactive target (vanilla
+	# chd500_01: typing 0).
 	body.targetCount = len(active)
 	body.typing = len(inactive)
 	body.blendTargetList = [target for target, _rows in active] + inactive

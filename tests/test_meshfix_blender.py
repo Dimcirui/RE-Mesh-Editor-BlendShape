@@ -140,7 +140,8 @@ def main():
 			assert re4.blendShapeHeader.count == 1
 			assert (body.targetCount, body.unknFlag, list(body.blendS)) == (1, int(mode == 1), [-1, 0, 0]), (
 				mode, body.targetCount, body.unknFlag, list(body.blendS))
-			assert body.typing >= 1 and list(body.blendSSList) == [-1]
+			# the key moves the only submesh, so no inactive target (vanilla chd500_01)
+			assert body.typing == 0 and list(body.blendSSList) == [-1], body.typing
 			active = body.blendTargetList[0]
 			assert [(run.subMeshVertexStartIndex, run.vertCount) for run in active.subMeshEntryList] == [(0, 6)]
 			header = re4.meshBufferHeader
