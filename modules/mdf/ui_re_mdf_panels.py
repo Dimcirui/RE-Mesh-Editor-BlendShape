@@ -93,6 +93,9 @@ class OBJECT_PT_MDFMaterialPreviewPanel(Panel):
 		col2.label(text = "Mod Directory")
 		col2.prop(re_mdf_toolpanel, "modDirectory")
 		col2.operator("re_mdf.apply_mdf")
+		if "MHWildsTime" in bpy.data.node_groups and "Animate" in bpy.data.node_groups["MHWildsTime"].nodes:
+			animated = bpy.data.node_groups["MHWildsTime"].nodes["Animate"].outputs[0].default_value > 0.0
+			col2.operator("re_mdf.toggle_material_animation",text = "Material Animation: On" if animated else "Material Animation: Off",icon = "PAUSE" if animated else "PLAY",depress = animated)
 
 class OBJECT_PT_MDFMaterialLoadSettingsPanel(Panel):
 	bl_label = "MDF Load Settings"

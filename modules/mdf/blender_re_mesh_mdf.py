@@ -194,15 +194,23 @@ MiscMapTypes = set([
 	"Tex2D_0",
 	"FakeSpecular",
 	"SecondaryBaseColorMap",
-	#"Detail_ALBD_R",
-	#"Detail_ALBD_G",
-	#"Detail_ALBD_B",
-	#"Detail_ALBD_A",
-	
-	#"Detail_NRRH_R",
-	#"Detail_NRRH_G",
-	#"Detail_NRRH_B",
-	#"Detail_NRRH_A",
+	#MHWILDS view space normal lookups
+	"FakeSphere_ALBAMap",
+	"ToonFakeSphereMap",
+	#MHWILDS detail layers, detail color layer mask and fur alpha
+	"Detail_ALBD_R",
+	"Detail_ALBD_G",
+	"Detail_ALBD_B",
+	"Detail_ALBD_A",
+	"Detail_NRRH_R",
+	"Detail_NRRH_G",
+	"Detail_NRRH_B",
+	"Detail_NRRH_A",
+	"ColorLayer_DetailMaskMap",
+	"Fixed_AlphaMap",
+	#MHWILDS VectorEmit/ParallaxEmit direction and SkinEdit blend normal, loaded only when the material uses them
+	"VectorEmitMap",
+	"BlendNormalMap",
 	])
 
 usedTextureSet.update(albedoVertexColorTypeSet)
@@ -219,6 +227,12 @@ usedTextureSet.update(SCOTTypes)
 usedTextureSet.update(NAMTypes)
 usedTextureSet.update(MiscMapTypes)
 
+#MHWILDS PanoramaMap fake refraction (FxMap.G is its weight) and thin film (FxMap.R)
+fakeRefractionTypeSet = set([
+	"PanoramaMap",
+	"FxMap",
+	])
+usedTextureSet.update(fakeRefractionTypeSet)
 #print(sorted(list(usedTextureSet)))
 baseUVTilingList = set([#Node types that use UV_Tiling property
 	"BaseDielectricMapBase",
@@ -229,7 +243,7 @@ baseUVTilingList = set([#Node types that use UV_Tiling property
 from ..gen_functions import raiseWarning,getBit,wildCardFileSearch
 from .file_re_mdf import readMDF,getMDFVersionToGameName
 from ..tex.blender_re_tex import loadTex
-from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup
+from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup,addMHWildsFakeSphereNodes,addMHWildsColorLayerNodes,addMHWildsPanoramaNodes,addMHWildsDetailLayerNodes,addMHWildsFilmNodes,addMHWildsFixedAlphaNodes,mhWildsFilmActive,mhWildsTextureNeeded,addMHWildsBlendNormalNodes,addMHWildsEmissiveNodes
 from ..ddsconv.directx.texconv import Texconv, unload_texconv
 DEBUG_MODE = False
 def debugprint(string):
@@ -476,7 +490,12 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					if "_ALB" in texture:
 						autoDetectedAlbedo = True
 						detectedAlbedo = True
-				if loadUnusedTextures or textureType in usedTextureSet or autoDetectedAlbedo:
+				isUsedTexture = textureType in usedTextureSet
+				if gameName == "MHWILDS":#Some MH Wilds slots only matter when the material turns their feature on
+					featureNeeded = mhWildsTextureNeeded(textureType,mdfMaterial.getPropertyDict())
+					if featureNeeded != None:
+						isUsedTexture = featureNeeded
+				if loadUnusedTextures or isUsedTexture or autoDetectedAlbedo:
 					baseTexturePath = texture.replace("@","").replace(".tex","").replace('/',os.sep)
 					outputPath = os.path.join(TEXTURE_CACHE_DIR,baseTexturePath+".png")
 					
@@ -686,19 +705,54 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					#nodeTree.links.new(UVMap1Node.outputs["UV"],skinMappingGroupNode.inputs["UV"])
 					
 					nodeTree.links.new(skinMappingGroupNode.outputs["Vector"],skinMapNode.inputs["Vector"])
+					if "AddColorUV" in matInfo["mPropDict"] and "BaseDielectricMap" in matInfo["textureNodeDict"]:
+						#SkinEdit PS #61 %185..%203: SkinMap is read at the constant UV AddColorUV.xy (D3D, V down)
+						#color = lerp(base, 2*base*skin, saturate(BaseDielectricMap.A * 1.0234)), before ColorParam
+						addColorUVNode = addPropertyNode(matInfo["mPropDict"]["AddColorUV"], matInfo["currentPropPos"], nodeTree)
+						uvXNode = nodes.new("ShaderNodeMath")
+						uvXNode.operation = "MULTIPLY"
+						uvXNode.location = skinMappingGroupNode.location - Vector((200,0))
+						links.new(addColorUVNode.outputs[0],uvXNode.inputs[0])
+						uvXNode.inputs[1].default_value = 100.0
+						links.new(uvXNode.outputs["Value"],skinMappingGroupNode.inputs["X"])
+						uvYNode = nodes.new("ShaderNodeMath")
+						uvYNode.operation = "MULTIPLY_ADD"
+						uvYNode.location = skinMappingGroupNode.location - Vector((200,200))
+						links.new(addColorUVNode.outputs[1],uvYNode.inputs[0])
+						uvYNode.inputs[1].default_value = -100.0
+						uvYNode.inputs[2].default_value = 100.0
+						links.new(uvYNode.outputs["Value"],skinMappingGroupNode.inputs["Y"])
+						if matInfo["albedoNodeLayerGroup"].currentOutSocket != None:
+							skinScaleNode = nodes.new("ShaderNodeVectorMath")
+							skinScaleNode.operation = "MULTIPLY"
+							skinScaleNode.location = skinMapNode.location + Vector((300,0))
+							links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,skinScaleNode.inputs[0])
+							links.new(skinMapNode.outputs["Color"],skinScaleNode.inputs[1])
+							skinDoubleNode = nodes.new("ShaderNodeVectorMath")
+							skinDoubleNode.operation = "SCALE"
+							skinDoubleNode.location = skinMapNode.location + Vector((500,0))
+							links.new(skinScaleNode.outputs["Vector"],skinDoubleNode.inputs[0])
+							skinDoubleNode.inputs["Scale"].default_value = 2.0
+							skinMaskNode = nodes.new("ShaderNodeMath")
+							skinMaskNode.operation = "MULTIPLY"
+							skinMaskNode.use_clamp = True
+							skinMaskNode.location = skinMapNode.location + Vector((500,-200))
+							links.new(matInfo["textureNodeDict"]["BaseDielectricMap"].outputs["Alpha"],skinMaskNode.inputs[0])
+							skinMaskNode.inputs[1].default_value = 1.0234
+							matInfo["albedoNodeLayerGroup"].addMixLayer(skinDoubleNode.outputs["Vector"],factorOutSocket = skinMaskNode.outputs["Value"],mixType = "MIX")
+					else:
 					
-					
-					overlaySkinNode = nodes.new("ShaderNodeMixRGB")
-					overlaySkinNode.location = skinMapNode.location + Vector((300,0))
-					overlaySkinNode.blend_type = "OVERLAY"
-					overlaySkinNode.inputs["Fac"].default_value = 1.0
-					links.new(skinMapNode.outputs["Color"],overlaySkinNode.inputs["Color1"])
-					if matInfo["albedoNodeLayerGroup"].currentOutSocket != None:
-						links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,overlaySkinNode.inputs["Color2"])
-						matInfo["albedoNodeLayerGroup"].currentOutSocket = overlaySkinNode.outputs["Color"]
+						overlaySkinNode = nodes.new("ShaderNodeMixRGB")
+						overlaySkinNode.location = skinMapNode.location + Vector((300,0))
+						overlaySkinNode.blend_type = "OVERLAY"
+						overlaySkinNode.inputs["Fac"].default_value = 1.0
+						links.new(skinMapNode.outputs["Color"],overlaySkinNode.inputs["Color1"])
+						if matInfo["albedoNodeLayerGroup"].currentOutSocket != None:
+							links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,overlaySkinNode.inputs["Color2"])
+							matInfo["albedoNodeLayerGroup"].currentOutSocket = overlaySkinNode.outputs["Color"]
 						
 						
-					#matInfo["albedoNodeLayerGroup"].addMixLayer(skinMapNode.outputs["Color"],factorOutSocket = None,mixType = "OVERLAY",mixFactor = 1.0)
+						#matInfo["albedoNodeLayerGroup"].addMixLayer(skinMapNode.outputs["Color"],factorOutSocket = None,mixType = "OVERLAY",mixFactor = 1.0)
 					
 				if "HairOverMap" in matInfo["textureNodeDict"]:
 					nodeTree.links.new(UVMap2Node.outputs["UV"],matInfo["textureNodeDict"]["HairOverMap"].inputs["Vector"])
@@ -1198,6 +1252,14 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 							matInfo["metallicNodeLayerGroup"].currentOutSocket = None
 					baseColorNode = addPropertyNode(matInfo["mPropDict"]["ColorParam"], matInfo["currentPropPos"], nodeTree)
 					matInfo["albedoNodeLayerGroup"].addMixLayer(baseColorNode.outputs["Color"],factorOutSocket = baseColorFactorSocket,mixType = "MULTIPLY",mixFactor = 1.0)
+				#MH Wilds base color stack, same order as the shaders: detail layers, then ColorLayer, on top of ColorParam * BaseDielectricMap
+				if matInfo["gameName"] == "MHWILDS":
+					if "BlendNormalMap" in matInfo["textureNodeDict"]:
+						addMHWildsBlendNormalNodes(nodeTree,matInfo)
+					if "DetailMaskMap" in matInfo["textureNodeDict"]:
+						addMHWildsDetailLayerNodes(nodeTree,matInfo)
+					if "ColorLayer_MaskMap" in matInfo["textureNodeDict"]:
+						addMHWildsColorLayerNodes(nodeTree,matInfo)
 				#mmtr specific nodes
 				#if "eye" in matInfo["mmtrName"]:
 				if "eye" in matInfo["blenderMaterial"].name or "eye" in matInfo["mmtrName"] or matInfo["mmtrName"].endswith("_ao.mmtr"):
@@ -1480,6 +1542,23 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					links.new(fresnelNode.outputs["Fac"],fresnelClampNode.inputs["Value"])
 					
 					matInfo["metallicNodeLayerGroup"].addMixLayer(fresnelClampNode.outputs["Result"])
+				if matInfo["gameName"] == "MHWILDS":
+					mappedNormalSocket = None
+					if normalVectorRotateNode != None:
+						mappedNormalSocket = normalVectorRotateNode.outputs["Vector"]
+					elif normalNode != None:
+						mappedNormalSocket = normalNode.outputs["Normal"]
+					#Same order as the shaders: thin film, panorama, then the FakeSphere add
+					if "FxMap" in matInfo["textureNodeDict"]:
+						addMHWildsFilmNodes(nodeTree,matInfo,mappedNormalSocket)
+					if "Fixed_AlphaMap" in matInfo["textureNodeDict"]:
+						addMHWildsFixedAlphaNodes(nodeTree,matInfo)
+					if "PanoramaMap" in matInfo["textureNodeDict"]:
+						addMHWildsPanoramaNodes(nodeTree,matInfo,mappedNormalSocket)
+					if "FakeSphere_ALBAMap" in matInfo["textureNodeDict"] or "ToonFakeSphereMap" in matInfo["textureNodeDict"]:
+						addMHWildsFakeSphereNodes(nodeTree,matInfo,mappedNormalSocket)
+					if "EmissiveMap" in matInfo["textureNodeDict"]:
+						addMHWildsEmissiveNodes(nodeTree,matInfo)
 				if matInfo["aoNodeLayerGroup"].currentOutSocket != None and not matInfo["disableAO"]:
 					#This isn't the correct way to apply AO but EEVEE has no good ways of doing AO maps that doesn't have downsides (such as killing screenspace reflections and subsurface)
 					

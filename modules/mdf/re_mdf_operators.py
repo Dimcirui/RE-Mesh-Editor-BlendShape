@@ -8,6 +8,7 @@ from ..gen_functions import raiseWarning,openFolder
 
 from .blender_re_mdf import createEmpty,reindexMaterials,createMDFCollection,checkNameUsage,buildMDF
 from .blender_re_mesh_mdf import importMDF
+from .blender_nodes_re_mdf import setMHWildsMaterialAnimation,getMHWildsMaterialAnimation
 from ..blender_utils import showErrorMessageBox
 from .file_re_mdf import getMDFVersionToGameName
 from .re_mdf_presets import saveAsPreset,readPresetJSON
@@ -131,6 +132,23 @@ class WM_OT_ApplyMDFToMeshCollection(Operator):
 			self.report({"ERROR"},"Invalid mesh or MDF collection.")
 			return {'CANCELLED'}
 		return {'FINISHED'}
+class WM_OT_ToggleMaterialAnimation(Operator):
+	bl_label = "Toggle Material Animation"
+	bl_description = "Plays animated MH Wilds material effects (AnimEmit, WaveEmit, SecEmit) along with the timeline. When off, materials show their t = 0 state"
+	bl_idname = "re_mdf.toggle_material_animation"
+
+	def execute(self, context):
+		state = getMHWildsMaterialAnimation()
+		if state == None:
+			self.report({"INFO"},"No animated MH Wilds materials are loaded")
+			return {'CANCELLED'}
+		setMHWildsMaterialAnimation(not state)
+		for window in context.window_manager.windows:
+			for area in window.screen.areas:
+				if area.type == "VIEW_3D":
+					area.tag_redraw()
+		return {'FINISHED'}
+
 class WM_OT_OpenPresetFolder(Operator):
 	bl_label = "Open Preset Folder"
 	bl_description = "Opens the preset folder in File Explorer"

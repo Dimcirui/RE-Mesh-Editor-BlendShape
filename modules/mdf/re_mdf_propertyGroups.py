@@ -40,6 +40,11 @@ try:
 except Exception as err:
 	print(f"Unable to load usable properties - {str(err)}")
 	editablePropsSet = set()
+try:
+	from .blender_nodes_re_mdf import MHWILDS_LIVE_PROPS
+	editablePropsSet.update(MHWILDS_LIVE_PROPS)
+except Exception as err:
+	print(f"Unable to load MH Wilds preview properties - {str(err)}")
 #print(editablePropsSet)
 
 def filterMDFCollection(self, collection):
@@ -113,13 +118,19 @@ def update_materialNodes(self,context):
 					node.outputs["Value"].default_value = value
 				elif self.data_type == "VEC4":
 					value = list(self.float_vector_value)
-					node.inputs[0].default_value = value[0]
-					node.inputs[1].default_value = value[1]
-					node.inputs[2].default_value = value[2]
-					node.inputs[3].default_value = value[3]
+					if "Color" in node.inputs:#Color named float4 with negative components is listed as VEC4 but built as a color node
+						node.inputs["Color"].default_value = value
+						node.inputs["Alpha"].default_value = value[3]
+					else:
+						node.inputs[0].default_value = value[0]
+						node.inputs[1].default_value = value[1]
+						node.inputs[2].default_value = value[2]
+						node.inputs[3].default_value = value[3]
 				elif self.data_type == "COLOR":
 					value = list(self.color_value)
 					node.inputs["Color"].default_value = value
+					if "Alpha" in node.inputs:#Color property nodes carry the 4th component separately
+						node.inputs["Alpha"].default_value = value[3]
 	
 				elif self.data_type == "BOOL":
 					if self.bool_value:

@@ -40,6 +40,7 @@ REME_FEATURES = {
 	"re9_blendshape_export": 2,
 	"static_normals": 1,
 	"surface_turn_export": 1,
+	"wilds_material_animation": 1,
 }
 
 import bpy
@@ -122,6 +123,7 @@ from .modules.mdf.re_mdf_operators import (
 	WM_OT_ApplyMDFToMeshCollection,
 	WM_OT_FindReplaceTextureBindings,
 	WM_OT_NullifyTextureBindings,
+	WM_OT_ToggleMaterialAnimation,
 
 )
 #tex
@@ -1835,6 +1837,7 @@ classes = [
 	WM_OT_ShowREMeshErrorWindow,
 	WM_OT_FindReplaceTextureBindings,
 	WM_OT_NullifyTextureBindings,
+	WM_OT_ToggleMaterialAnimation,
 	
 	#sfur
 	ImportRESFur,

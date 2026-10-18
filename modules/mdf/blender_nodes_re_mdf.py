@@ -1,5 +1,6 @@
 import bpy
 import os
+from math import pi
 from .blender_re_mdf import colorPropertySet
 from .blender_re_mesh_mdf import albedoTypeSet
 
@@ -113,6 +114,37 @@ def getVec4NodeGroup(nodeTree):
 	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
 	nodeGroupNode.node_tree = nodeGroup
 	
+	return nodeGroupNode
+
+def getVec4ColorNodeGroup(nodeTree):#Color property with negative components, linked values are not clamped like socket defaults
+	if "Vec4ColorNodeGroup" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["Vec4ColorNodeGroup"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="Vec4ColorNodeGroup")
+		for name in ("X","Y","Z","W"):
+			if bpy.app.version < (4,0,0):
+				nodeGroup.inputs.new("NodeSocketFloat",name)
+			else:
+				nodeGroup.interface.new_socket(name=name,description="",in_out ="INPUT", socket_type="NodeSocketFloat")
+		if bpy.app.version < (4,0,0):
+			nodeGroup.outputs.new('NodeSocketColor', 'Color')
+			nodeGroup.outputs.new('NodeSocketFloat', 'Alpha')
+		else:
+			nodeGroup.interface.new_socket(name="Color",description="",in_out ="OUTPUT", socket_type="NodeSocketColor")
+			nodeGroup.interface.new_socket(name="Alpha",description="",in_out ="OUTPUT", socket_type="NodeSocketFloat")
+		inNode = nodeGroup.nodes.new('NodeGroupInput')
+		combineNode = nodeGroup.nodes.new('ShaderNodeCombineXYZ')
+		combineNode.location = (200,0)
+		outNode = nodeGroup.nodes.new('NodeGroupOutput')
+		outNode.location = (400,0)
+		for name in ("X","Y","Z"):
+			nodeGroup.links.new(inNode.outputs[name],combineNode.inputs[name])
+		nodeGroup.links.new(combineNode.outputs["Vector"],outNode.inputs["Color"])
+		nodeGroup.links.new(inNode.outputs["W"],outNode.inputs["Alpha"])
+
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+
 	return nodeGroupNode
 
 def getBentNormalNodeGroup(nodeTree):
@@ -460,6 +492,224 @@ def getMHWildsSkinMappingNodeGroup(nodeTree):
 	
 	return nodeGroupNode
 
+def getMHWildsFakeSphereUVNodeGroup(nodeTree):
+	#View space normal XY lookup used by the MH Wilds FakeSphere / ToonFakeSphere slots (matcap style, clamp sampler)
+	#From the compiled shaders: BaseAlpha_MatCap_FX PS #75, Base_eyeRefract_Emit PS #63, Base_GOLD_Push PS #65 (gold has no ScaleOffset/Position, defaults below give the same UV)
+	#M = max(Position.rgb), m = min(Position.rgb)
+	#shiftX = M != 0 ? 1 - 2*((M + 1e-6 - m)/M) : 1, shiftY = 2*M - 1
+	#q = (normalVS.xy + ScaleOffset.zw + (shiftX,-shiftY)) / max(ScaleOffset.xy,1e-5)
+	#uv = (0.5 + 0.5*q.x, 0.5 - 0.5*q.y) in D3D texture space, so V is flipped back for Blender
+	if "MHWildsFakeSphereUV" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsFakeSphereUV"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsFakeSphereUV")
+
+		if bpy.app.version < (4,0,0):
+			nodeGroup.inputs.new("NodeSocketVector","Normal")
+			nodeGroup.inputs.new("NodeSocketColor","Position")
+			nodeGroup.inputs.new("NodeSocketFloat","ScaleX")
+			nodeGroup.inputs.new("NodeSocketFloat","ScaleY")
+			nodeGroup.inputs.new("NodeSocketFloat","OffsetX")
+			nodeGroup.inputs.new("NodeSocketFloat","OffsetY")
+			nodeGroup.outputs.new("NodeSocketVector","Vector")
+		else:
+			nodeGroup.interface.new_socket(name="Normal",description="",in_out ="INPUT", socket_type="NodeSocketVector")
+			nodeGroup.interface.new_socket(name="Position",description="",in_out ="INPUT", socket_type="NodeSocketColor")
+			nodeGroup.interface.new_socket(name="ScaleX",description="",in_out ="INPUT", socket_type="NodeSocketFloat")
+			nodeGroup.interface.new_socket(name="ScaleY",description="",in_out ="INPUT", socket_type="NodeSocketFloat")
+			nodeGroup.interface.new_socket(name="OffsetX",description="",in_out ="INPUT", socket_type="NodeSocketFloat")
+			nodeGroup.interface.new_socket(name="OffsetY",description="",in_out ="INPUT", socket_type="NodeSocketFloat")
+			nodeGroup.interface.new_socket(name="Vector",description="",in_out ="OUTPUT", socket_type="NodeSocketVector")
+
+		nodes = nodeGroup.nodes
+		links = nodeGroup.links
+
+		def mathNode(operation,a,b,loc,c = None):
+			node = nodes.new("ShaderNodeMath")
+			node.operation = operation
+			node.location = loc
+			for index,value in enumerate((a,b) if c == None else (a,b,c)):
+				if isinstance(value,(int,float)):
+					node.inputs[index].default_value = value
+				else:
+					links.new(value,node.inputs[index])
+			return node.outputs["Value"]
+
+		inNode = nodes.new('NodeGroupInput')
+		inNode.location = (-200,0)
+
+		#Camera space in Blender is X right, Y up, same as the first two rows of the view matrix
+		transformNode = nodes.new("ShaderNodeVectorTransform")
+		transformNode.location = (0,300)
+		transformNode.vector_type = "NORMAL"
+		transformNode.convert_from = "WORLD"
+		transformNode.convert_to = "CAMERA"
+		links.new(inNode.outputs["Normal"],transformNode.inputs["Vector"])
+
+		normalSepNode = nodes.new("ShaderNodeSeparateXYZ")
+		normalSepNode.location = (200,300)
+		links.new(transformNode.outputs["Vector"],normalSepNode.inputs["Vector"])
+
+		posSepNode = nodes.new("ShaderNodeSeparateColor")
+		posSepNode.location = (0,-200)
+		links.new(inNode.outputs["Position"],posSepNode.inputs["Color"])
+
+		posMax = mathNode("MAXIMUM",posSepNode.outputs["Red"],mathNode("MAXIMUM",posSepNode.outputs["Green"],posSepNode.outputs["Blue"],(200,-100)),(400,-100))
+		posMin = mathNode("MINIMUM",posSepNode.outputs["Red"],mathNode("MINIMUM",posSepNode.outputs["Green"],posSepNode.outputs["Blue"],(200,-300)),(400,-300))
+		#Blender's divide returns 0 when M is 0, which gives shiftX = 1 like the shader's branch
+		ratio = mathNode("DIVIDE",mathNode("SUBTRACT",mathNode("ADD",posMax,1.0e-6,(600,-100)),posMin,(800,-100)),posMax,(1000,-100))
+		shiftX = mathNode("SUBTRACT",1.0,mathNode("MULTIPLY",ratio,2.0,(1200,-100)),(1400,-100))
+		shiftY = mathNode("SUBTRACT",mathNode("MULTIPLY",posMax,2.0,(600,-300)),1.0,(800,-300))
+
+		qX = mathNode("DIVIDE",
+			mathNode("ADD",mathNode("ADD",normalSepNode.outputs["X"],inNode.outputs["OffsetX"],(1400,300)),shiftX,(1600,300)),
+			mathNode("MAXIMUM",inNode.outputs["ScaleX"],1.0e-5,(1600,500)),(1800,300))
+		qY = mathNode("DIVIDE",
+			mathNode("SUBTRACT",mathNode("ADD",normalSepNode.outputs["Y"],inNode.outputs["OffsetY"],(1400,100)),shiftY,(1600,100)),
+			mathNode("MAXIMUM",inNode.outputs["ScaleY"],1.0e-5,(1600,-500)),(1800,100))
+
+		#Blender V = 1 - D3D V = 0.5 + 0.5*q.y
+		combineNode = nodes.new("ShaderNodeCombineXYZ")
+		combineNode.location = (2200,200)
+		links.new(mathNode("MULTIPLY_ADD",qX,0.5,(2000,300),0.5),combineNode.inputs["X"])
+		links.new(mathNode("MULTIPLY_ADD",qY,0.5,(2000,100),0.5),combineNode.inputs["Y"])
+
+		outNode = nodes.new('NodeGroupOutput')
+		outNode.location = (2400,200)
+		links.new(combineNode.outputs["Vector"],outNode.inputs["Vector"])
+
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	#Defaults give zero shift and no scaling, which is the Base_GOLD_Push lookup
+	nodeGroupNode.inputs["Position"].default_value = (0.5,0.25,0.25,1.0)
+	nodeGroupNode.inputs["ScaleX"].default_value = 1.0
+	nodeGroupNode.inputs["ScaleY"].default_value = 1.0
+	return nodeGroupNode
+
+def getMHWildsColorLayerNodeGroup(nodeTree):
+	#ColorLayer_MaskMap tinting, from Base_Equip PS #63 (DXIL %1747..%1866)
+	#Per channel c: x = saturate(saturate(Mask.c + Width.c - (Width.c+1)*(1 - Fade.c/2)) / Width.c), m = x*x*(3-2x)
+	#layer = UseOverRay ? 0.5 : base, then for R,G,B,A: layer = lerp(layer, ColorLayer_c.rgb, m*ColorLayer_c.a)
+	#color = UseOverRay ? 2*base*layer : layer, so the 0.502 defaults leave the base color unchanged
+	#roughness multiplier: r = 1, then r = lerp(r, ColorLayer_Roughness.c, m*ColorLayer_c.a) for R,G,B,A
+	if "MHWildsColorLayer" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsColorLayer"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsColorLayer")
+		channels = ("R","G","B","A")
+		socketList = [("Base","NodeSocketColor"),("Mask","NodeSocketColor"),("MaskAlpha","NodeSocketFloat")]
+		for channel in channels:
+			socketList.append((f"ColorLayer_{channel}","NodeSocketColor"))
+			socketList.append((f"ColorLayer_{channel}_Alpha","NodeSocketFloat"))
+		socketList += [("Width","NodeSocketColor"),("WidthA","NodeSocketFloat"),("Fade","NodeSocketColor"),("FadeA","NodeSocketFloat"),
+			("Roughness","NodeSocketColor"),("RoughnessA","NodeSocketFloat"),("UseOverRay","NodeSocketFloat"),
+			("Detail Mask","NodeSocketColor"),("Detail Mask Alpha","NodeSocketFloat"),("ColorLayer_DetailMask_Blend","NodeSocketFloat")]
+		for name,socketType in socketList:
+			if bpy.app.version < (4,0,0):
+				nodeGroup.inputs.new(socketType,name)
+			else:
+				nodeGroup.interface.new_socket(name=name,description="",in_out ="INPUT", socket_type=socketType)
+		for name,socketType in (("Color","NodeSocketColor"),("Roughness","NodeSocketFloat")):
+			if bpy.app.version < (4,0,0):
+				nodeGroup.outputs.new(socketType,name)
+			else:
+				nodeGroup.interface.new_socket(name=name,description="",in_out ="OUTPUT", socket_type=socketType)
+
+		nodes = nodeGroup.nodes
+		links = nodeGroup.links
+		def mathNode(operation,a,b,loc,c = None,clamp = False):
+			node = nodes.new("ShaderNodeMath")
+			node.operation = operation
+			node.location = loc
+			node.use_clamp = clamp
+			for index,value in enumerate((a,b) if c == None else (a,b,c)):
+				if isinstance(value,(int,float)):
+					node.inputs[index].default_value = value
+				else:
+					links.new(value,node.inputs[index])
+			return node.outputs["Value"]
+		def separate(socket,loc):
+			node = nodes.new("ShaderNodeSeparateColor")
+			node.location = loc
+			links.new(socket,node.inputs["Color"])
+			return node.outputs
+		def mixColor(blendType,fac,colorA,colorB,loc):
+			node = nodes.new("ShaderNodeMixRGB")
+			node.blend_type = blendType
+			node.location = loc
+			if isinstance(fac,(int,float)):
+				node.inputs["Fac"].default_value = fac
+			else:
+				links.new(fac,node.inputs["Fac"])
+			links.new(colorA,node.inputs["Color1"])
+			if isinstance(colorB,tuple):
+				node.inputs["Color2"].default_value = colorB
+			else:
+				links.new(colorB,node.inputs["Color2"])
+			return node.outputs["Color"]
+
+		inNode = nodes.new('NodeGroupInput')
+		inNode.location = (-400,0)
+		maskSep = separate(inNode.outputs["Mask"],(-200,600))
+		widthSep = separate(inNode.outputs["Width"],(-200,300))
+		fadeSep = separate(inNode.outputs["Fade"],(-200,0))
+		roughSep = separate(inNode.outputs["Roughness"],(-200,-300))
+		detailSep = separate(inNode.outputs["Detail Mask"],(-200,-600))
+
+		useOverRay = mathNode("GREATER_THAN",inNode.outputs["UseOverRay"],0.0,(0,-600))
+		layer = mixColor("MIX",useOverRay,inNode.outputs["Base"],(0.5,0.5,0.5,1.0),(200,-600))
+		roughness = 1.0
+		for index,channel in enumerate(channels):
+			y = 900 - index * 500
+			if channel == "A":
+				maskValue,width,fade,roughValue = inNode.outputs["MaskAlpha"],inNode.outputs["WidthA"],inNode.outputs["FadeA"],inNode.outputs["RoughnessA"]
+			else:
+				socketName = ("Red","Green","Blue")[index]
+				maskValue,width,fade,roughValue = maskSep[socketName],widthSep[socketName],fadeSep[socketName],roughSep[socketName]
+			#ColorLayer_DetailMaskMap: mask *= (2*detail - 1)*ColorLayer_DetailMask_Blend + 1, not saturated (MultiBlend PS #61 %1843..%1862)
+			detailValue = inNode.outputs["Detail Mask Alpha"] if channel == "A" else detailSep[socketName]
+			maskValue = mathNode("MULTIPLY",maskValue,mathNode("MULTIPLY_ADD",mathNode("MULTIPLY_ADD",detailValue,2.0,(0,y-300),-1.0),inNode.outputs["ColorLayer_DetailMask_Blend"],(100,y-300),1.0),(150,y-300))
+			fadeTerm = mathNode("MULTIPLY",mathNode("ADD",width,1.0,(200,y-100)),mathNode("MULTIPLY_ADD",fade,-0.5,(200,y-200),1.0),(400,y-100))
+			x = mathNode("SUBTRACT",mathNode("ADD",maskValue,width,(200,y)),fadeTerm,(600,y),clamp = True)
+			#Blender's divide returns 0 for a zero width, the shader gets NaN which saturate also turns into 0
+			x = mathNode("DIVIDE",x,width,(800,y),clamp = True)
+			smooth = mathNode("MULTIPLY",mathNode("MULTIPLY",x,x,(1000,y)),mathNode("MULTIPLY_ADD",x,-2.0,(1000,y-100),3.0),(1200,y))
+			weight = mathNode("MULTIPLY",smooth,inNode.outputs[f"ColorLayer_{channel}_Alpha"],(1400,y))
+			layer = mixColor("MIX",weight,layer,inNode.outputs[f"ColorLayer_{channel}"],(1600,y))
+			if isinstance(roughness,float):
+				roughness = mathNode("MULTIPLY_ADD",mathNode("SUBTRACT",roughValue,1.0,(1600,y-200)),weight,(1800,y-200),1.0)
+			else:
+				roughness = mathNode("MULTIPLY_ADD",mathNode("SUBTRACT",roughValue,roughness,(1600,y-200)),weight,(1800,y-200),roughness)
+
+		overRayNode = nodes.new("ShaderNodeVectorMath")
+		overRayNode.operation = "MULTIPLY"
+		overRayNode.location = (2000,0)
+		links.new(inNode.outputs["Base"],overRayNode.inputs[0])
+		links.new(layer,overRayNode.inputs[1])
+		scaleNode = nodes.new("ShaderNodeVectorMath")
+		scaleNode.operation = "SCALE"
+		scaleNode.location = (2200,0)
+		links.new(overRayNode.outputs["Vector"],scaleNode.inputs[0])
+		scaleNode.inputs["Scale"].default_value = 2.0
+		finalColor = mixColor("MIX",useOverRay,layer,scaleNode.outputs["Vector"],(2400,0))
+
+		outNode = nodes.new('NodeGroupOutput')
+		outNode.location = (2600,0)
+		links.new(finalColor,outNode.inputs["Color"])
+		links.new(roughness,outNode.inputs["Roughness"])
+
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	for channel in ("R","G","B","A"):
+		nodeGroupNode.inputs[f"ColorLayer_{channel}"].default_value = (0.5,0.5,0.5,1.0)
+	for name in ("Width","Fade","Roughness"):
+		nodeGroupNode.inputs[name].default_value = (1.0,1.0,1.0,1.0)
+		nodeGroupNode.inputs[name+"A"].default_value = 1.0
+	nodeGroupNode.inputs["UseOverRay"].default_value = 1.0
+	nodeGroupNode.inputs["Detail Mask"].default_value = (0.5,0.5,0.5,1.0)
+	nodeGroupNode.inputs["Detail Mask Alpha"].default_value = 0.5
+	return nodeGroupNode
+
 def getMHWildsDetailMapNodeGroup(nodeTree):#Unfinished
 	if "MHWildsDetailMapNodeGroup" in bpy.data.node_groups:
 		nodeGroup = bpy.data.node_groups["MHWildsDetailMapNodeGroup"]
@@ -587,7 +837,15 @@ def addPropertyNode(prop,currentPos,node_tree):
 		propNode = node_tree.nodes[prop.propName]
 	else:
 		lowerPropName = prop.propName.lower()
-		if prop.propName in colorPropertySet or (prop.paramCount == 4 and ("color" in lowerPropName or "_col_" in lowerPropName) and "rate" not in lowerPropName):
+		isColor = prop.propName in colorPropertySet or (prop.paramCount == 4 and ("color" in lowerPropName or "_col_" in lowerPropName) and "rate" not in lowerPropName)
+		if isColor and min(prop.propValue[:4]) < 0.0:
+			#Color sockets clamp negative default values to 0 but the shader gets the raw float4, so take the components as floats
+			#Same X/Y/Z/W inputs as the MDF panel's VEC4 entry, same Color/Alpha outputs as a color property node
+			nodeGroup = getVec4ColorNodeGroup(node_tree)
+			for index in range(4):
+				nodeGroup.inputs[index].default_value = prop.propValue[index]
+			propNode = nodeGroup
+		elif isColor:
 			#RGBA Color
 			nodeGroup = getColorNodeGroup(node_tree)
 			nodeGroup.inputs["Color"].default_value = prop.propValue
@@ -1005,6 +1263,1269 @@ def newALPNode (nodeTree,textureType,matInfo):
 	return imageNode
 
 EMISSION_MULTIPLIER = 0.1#Multiply strength by this value,way too bright by default
+
+def hasLoadedImage(matInfo,textureType):#Missing textures get a white placeholder, which would wash the whole surface out
+	node = matInfo["textureNodeDict"].get(textureType)
+	if node == None:
+		return False
+	return not (hasattr(node,"image") and (node.image == None or node.image.name.startswith("Missing ")))
+
+def linkMHWildsProp(nodeTree,matInfo,propName,socket,default = None,output = None):
+	#Feeds an MDF property into socket through a property node named after it, so editing the property in the MDF material panel updates the preview live
+	#output: None = first output, "Color"/"Alpha" for color properties, an index for Vec4 components
+	props = matInfo["mPropDict"]
+	if propName not in props:
+		if default != None:
+			socket.default_value = default
+		return None
+	propNode = addPropertyNode(props[propName], matInfo["currentPropPos"], nodeTree)
+	if output == None:
+		outSocket = propNode.outputs[0]
+	elif isinstance(output,int):
+		outSocket = propNode.outputs[output] if len(propNode.outputs) > output else propNode.outputs[0]
+	else:
+		outSocket = propNode.outputs[output] if output in propNode.outputs else propNode.outputs[0]
+	nodeTree.links.new(outSocket,socket)
+	return propNode
+
+#MDF properties the MH Wilds preview feeds through property nodes, editing them in the MDF material panel updates the nodes live
+MHWILDS_LIVE_PROPS = set(["useOPM","ModulateColor","ColorLayer_DetailMask_Tile","ColorLayer_DetailMask_Blend","Film_Thickness","Film_IOR","Film_Blend",
+	"UseBaseColorFilm","FullFIlm","NormalBlendParam","VectorEmit_power","ParallaxEmit_Height","ParallaxEmit_Blend","MoveEmit","MoveEmit_Width","Use_WaveMove",
+	"AnimEmit_Min","AnimEmit_Speed","UseWaveEmit","AnimEmitWave","SecEmit_Anim_Min","SecEmit_Anim_Speed","SecEmit_Anim_UseWaveEmit","SecEmit_Anim_Wave",
+	"SecondaryEmitColor","AddColorUV","ToonEmissiveIntensity","FakeHighLight_Position","FakeHighLight_ScaleOffset","FakeHighLight_Color",
+	"FakeRefraction_Blend","Refraction_Index","UseOverRay_ColorLayer","ColorLayer_Mask_Width","ColorLayer_Mask_Fade","ColorLayer_Roughness"])
+for _channel in ("R","G","B","A"):
+	MHWILDS_LIVE_PROPS.update([f"ColorLayer_{_channel}",f"Use_{_channel}",f"UseOpacity_{_channel}",f"PrevHeight_{_channel}",f"UseThrough_Normal_{_channel}",
+		f"DetailAlphaRef_{_channel}",f"DetailAlphaWidth_{_channel}",f"Detail_Roughness_{_channel}",f"Detail_Metal_{_channel}",f"DetailNormal_{_channel}",
+		f"Detail_Roughness_Blend_{_channel}",f"UseFlip_{_channel}",f"Detail_Color_{_channel}",f"DetailTile_{_channel}",f"UseUV_ScaleOffset_{_channel}",
+		f"UV_ScaleOffset_{_channel}",f"BaseNormal_Blend_{_channel}"])
+
+def getMHWildsPanoramaUVNodeGroup(nodeTree):
+	#PanoramaMap fake refraction lookup, from BaseAlpha_MatCap_FX PS #75 (DXIL %437..501), same code in Base_Equip #63/#65
+	#dir = normalize(cameraToSurface - Refraction_Index * N), u = frac(atan2(dir.z,dir.x)/(2*PI) + 0.5), v = acos(dir.y)/PI
+	#dir is in RE space (Y up), meshes are imported rotated 90 on X so RE = (x, z, -y) of Blender
+	if "MHWildsPanoramaUV" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsPanoramaUV"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsPanoramaUV")
+		for name,socketType,inOut in (("Normal","NodeSocketVector","INPUT"),("Refraction_Index","NodeSocketFloat","INPUT"),("Vector","NodeSocketVector","OUTPUT")):
+			if bpy.app.version < (4,0,0):
+				(nodeGroup.inputs if inOut == "INPUT" else nodeGroup.outputs).new(socketType,name)
+			else:
+				nodeGroup.interface.new_socket(name=name,description="",in_out = inOut, socket_type=socketType)
+		nodes = nodeGroup.nodes
+		links = nodeGroup.links
+		def mathNode(operation,a,b,loc,c = None):
+			node = nodes.new("ShaderNodeMath")
+			node.operation = operation
+			node.location = loc
+			for index,value in enumerate((a,b) if c == None else (a,b,c)):
+				if isinstance(value,(int,float)):
+					node.inputs[index].default_value = value
+				else:
+					links.new(value,node.inputs[index])
+			return node.outputs["Value"]
+		def vectorNode(operation,a,b,loc):
+			node = nodes.new("ShaderNodeVectorMath")
+			node.operation = operation
+			node.location = loc
+			links.new(a,node.inputs[0])
+			if b != None:
+				target = node.inputs["Scale"] if operation == "SCALE" else node.inputs[1]
+				if isinstance(b,(int,float)):
+					target.default_value = b
+				else:
+					links.new(b,target)
+			return node.outputs["Vector"]
+
+		inNode = nodes.new('NodeGroupInput')
+		inNode.location = (-400,0)
+		geometryNode = nodes.new("ShaderNodeNewGeometry")
+		geometryNode.location = (-400,300)
+		#Incoming points from the surface to the camera
+		cameraToSurface = vectorNode("SCALE",geometryNode.outputs["Incoming"],-1.0,(-200,300))
+		normalOffset = vectorNode("SCALE",inNode.outputs["Normal"],mathNode("MULTIPLY",inNode.outputs["Refraction_Index"],-1.0,(-200,0)),(0,0))
+		direction = vectorNode("NORMALIZE",vectorNode("ADD",cameraToSurface,normalOffset,(200,200)),None,(400,200))
+		sepNode = nodes.new("ShaderNodeSeparateXYZ")
+		sepNode.location = (600,200)
+		links.new(direction,sepNode.inputs["Vector"])
+		#RE x = X, RE y = Z, RE z = -Y
+		reZ = mathNode("MULTIPLY",sepNode.outputs["Y"],-1.0,(800,300))
+		angle = mathNode("ARCTAN2",reZ,sepNode.outputs["X"],(1000,300))
+		u = mathNode("FRACT",mathNode("MULTIPLY_ADD",angle,1.0/(2.0*pi),(1200,300),0.5),0.0,(1400,300))
+		v = mathNode("DIVIDE",mathNode("ARCCOSINE",sepNode.outputs["Z"],0.0,(1000,100)),pi,(1200,100))
+		#D3D V to Blender V
+		v = mathNode("SUBTRACT",1.0,v,(1400,100))
+		combineNode = nodes.new("ShaderNodeCombineXYZ")
+		combineNode.location = (1600,200)
+		links.new(u,combineNode.inputs["X"])
+		links.new(v,combineNode.inputs["Y"])
+		outNode = nodes.new('NodeGroupOutput')
+		outNode.location = (1800,200)
+		links.new(combineNode.outputs["Vector"],outNode.inputs["Vector"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+class ShaderGroupBuilder():
+	#Small helper for building math heavy node groups
+	def __init__(self,nodeGroup):
+		self.nodes = nodeGroup.nodes
+		self.links = nodeGroup.links
+		self.x = 0
+	def _set(self,socket,value):
+		if isinstance(value,(int,float)):
+			socket.default_value = value
+		elif isinstance(value,tuple):
+			socket.default_value = value
+		else:
+			self.links.new(value,socket)
+	def math(self,operation,a,b = 0.0,c = None,clamp = False):
+		node = self.nodes.new("ShaderNodeMath")
+		node.operation = operation
+		node.use_clamp = clamp
+		node.location = (self.x,0)
+		self.x += 20
+		for index,value in enumerate((a,b) if c == None else (a,b,c)):
+			self._set(node.inputs[index],value)
+		return node.outputs["Value"]
+	def lerp(self,a,b,t):#a + (b-a)*t
+		return self.math("MULTIPLY_ADD",self.math("SUBTRACT",b,a),t,a)
+	def smoothstep01(self,x):#x*x*(3-2x)
+		return self.math("MULTIPLY",self.math("MULTIPLY",x,x),self.math("MULTIPLY_ADD",x,-2.0,3.0))
+	def select(self,condition,ifTrue,ifFalse):#condition is 0 or 1
+		return self.lerp(ifFalse,ifTrue,condition)
+	def greater0(self,value):
+		return self.math("GREATER_THAN",value,0.0)
+	def separate(self,socket):
+		node = self.nodes.new("ShaderNodeSeparateColor")
+		node.location = (self.x,0)
+		self._set(node.inputs["Color"],socket)
+		return node.outputs
+	def separateXYZ(self,socket):
+		node = self.nodes.new("ShaderNodeSeparateXYZ")
+		node.location = (self.x,0)
+		self._set(node.inputs["Vector"],socket)
+		return node.outputs
+	def combineXYZ(self,x,y,z):
+		node = self.nodes.new("ShaderNodeCombineXYZ")
+		node.location = (self.x,0)
+		for socket,value in zip(node.inputs,(x,y,z)):
+			self._set(socket,value)
+		return node.outputs["Vector"]
+	def combineColor(self,r,g,b):
+		node = self.nodes.new("ShaderNodeCombineColor")
+		node.location = (self.x,0)
+		for socket,value in zip(node.inputs,(r,g,b)):
+			self._set(socket,value)
+		return node.outputs["Color"]
+	def normalize3(self,x,y,z):
+		inv = self.math("INVERSE_SQRT",self.math("MULTIPLY_ADD",x,x,self.math("MULTIPLY_ADD",y,y,self.math("MULTIPLY",z,z))))
+		return self.math("MULTIPLY",x,inv),self.math("MULTIPLY",y,inv),self.math("MULTIPLY",z,inv)
+
+def newGroupSockets(nodeGroup,socketList,inOut):
+	for name,socketType in socketList:
+		if bpy.app.version < (4,0,0):
+			(nodeGroup.inputs if inOut == "INPUT" else nodeGroup.outputs).new(socketType,name)
+		else:
+			nodeGroup.interface.new_socket(name=name,description="",in_out = inOut, socket_type=socketType)
+
+def getMHWildsDetailUVNodeGroup(nodeTree):
+	#Detail layer UV, from Base_Equip / VFXwe PS #63: uv = (UseFlip ? uv0.yx : uv0) * DetailTile, then * UV_ScaleOffset.xy + .zw when UseUV_ScaleOffset
+	#Done in D3D UV space (V down), Blender V = 1 - D3D V
+	if "MHWildsDetailUV" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsDetailUV"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsDetailUV")
+		newGroupSockets(nodeGroup,[("UV","NodeSocketVector"),("DetailTile","NodeSocketFloat"),("UseFlip","NodeSocketFloat"),("UseUV_ScaleOffset","NodeSocketFloat"),
+			("ScaleX","NodeSocketFloat"),("ScaleY","NodeSocketFloat"),("OffsetX","NodeSocketFloat"),("OffsetY","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Vector","NodeSocketVector")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		inNode = b.nodes.new('NodeGroupInput')
+		i = inNode.outputs
+		uv = b.separateXYZ(i["UV"])
+		u = uv["X"]
+		v = b.math("SUBTRACT",1.0,uv["Y"])
+		flip = b.greater0(i["UseFlip"])
+		u,v = b.select(flip,v,u),b.select(flip,u,v)
+		u = b.math("MULTIPLY",u,i["DetailTile"])
+		v = b.math("MULTIPLY",v,i["DetailTile"])
+		useScaleOffset = b.greater0(i["UseUV_ScaleOffset"])
+		u = b.select(useScaleOffset,b.math("MULTIPLY_ADD",u,i["ScaleX"],i["OffsetX"]),u)
+		v = b.select(useScaleOffset,b.math("MULTIPLY_ADD",v,i["ScaleY"],i["OffsetY"]),v)
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(b.combineXYZ(u,b.math("SUBTRACT",1.0,v),0.0),outNode.inputs["Vector"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def getMHWildsDetailLayerNodeGroup(nodeTree):
+	#One Detail_ALBD/NRRH layer, from VFXwe PS #63 (DXIL %565..%687 for R, %764..%956 for G), same code in Base_Equip PS #63
+	#mask = Use ? DetailMaskMap.c : 0
+	#heightOpacity = PrevHeight > 0 ? saturate(NRRH.B - saturate(prevAccHeight - 1 + 2*PrevHeight)) : NRRH.B, opacity = UseOpacity ? heightOpacity : 1
+	#t = AlphaWidth - (AlphaWidth+1)*(1-AlphaRef), w = AlphaWidth == 0 ? 1e-4 : AlphaWidth
+	#m = useOPM ? smoothstep(saturate(saturate(t + opacity*mask)/w)) : smoothstep(saturate(saturate(t + opacity)/w)) * mask
+	#color = lerp(prev, (2*Detail_Color.rgb*sqrt(ALBD.rgb))^2, Detail_Color.a*m)
+	#roughness = lerp(prev, 2*NRRH.R*Detail_Roughness, Detail_Roughness_Blend*m), metal = lerp(prev, 2*(1-ALBD.A)*Detail_Metal, m)
+	#normal: octahedral NRRH.GA, UseFlip maps xy to (-y,-x), n = normalize(start.xy + 2*DetailNormal*xy, start.z) with start = UseThrough_Normal ? prev : (0,0,1), normal = lerp(prev, n, m)
+	#accumulated height = lerp(prevAccHeight, NRRH.B, m)
+	if "MHWildsDetailLayer" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsDetailLayer"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsDetailLayer")
+		floatInputs = ["Prev Roughness","Prev Metal","Prev Height","ALBD Alpha","NRRH Alpha","Mask","Use","UseOpacity","PrevHeight","UseThrough_Normal","useOPM",
+			"DetailAlphaRef","DetailAlphaWidth","Detail_Color Alpha","Detail_Roughness","Detail_Metal","DetailNormal","Detail_Roughness_Blend","UseFlip"]
+		newGroupSockets(nodeGroup,[("Prev Color","NodeSocketColor"),("Prev Normal","NodeSocketVector"),("ALBD","NodeSocketColor"),("NRRH","NodeSocketColor"),("Detail_Color","NodeSocketColor")]
+			+ [(name,"NodeSocketFloat") for name in floatInputs],"INPUT")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor"),("Roughness","NodeSocketFloat"),("Metal","NodeSocketFloat"),("Normal","NodeSocketVector"),
+			("Height","NodeSocketFloat"),("Weight","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		inNode = b.nodes.new('NodeGroupInput')
+		i = inNode.outputs
+		nrrh = b.separate(i["NRRH"])
+		height = nrrh["Blue"]
+		mask = b.math("MULTIPLY",b.greater0(i["Use"]),i["Mask"])
+		prevTerm = b.math("SUBTRACT",b.math("MULTIPLY_ADD",i["PrevHeight"],2.0,i["Prev Height"]),1.0,clamp = True)
+		heightOpacity = b.select(b.greater0(i["PrevHeight"]),b.math("SUBTRACT",height,prevTerm,clamp = True),height)
+		opacity = b.select(b.greater0(i["UseOpacity"]),heightOpacity,1.0)
+		width = i["DetailAlphaWidth"]
+		threshold = b.math("SUBTRACT",width,b.math("MULTIPLY",b.math("ADD",width,1.0),b.math("SUBTRACT",1.0,i["DetailAlphaRef"])))
+		safeWidth = b.select(b.math("COMPARE",width,0.0,0.0),1.0e-4,width)
+		opmWeight = b.smoothstep01(b.math("DIVIDE",b.math("MULTIPLY_ADD",opacity,mask,threshold,clamp = True),safeWidth,clamp = True))
+		plainWeight = b.math("MULTIPLY",b.smoothstep01(b.math("DIVIDE",b.math("ADD",threshold,opacity,clamp = True),safeWidth,clamp = True)),mask)
+		weight = b.select(b.greater0(i["useOPM"]),opmWeight,plainWeight)
+
+		albd = b.separate(i["ALBD"])
+		tint = b.separate(i["Detail_Color"])
+		layerColor = []
+		for channel in ("Red","Green","Blue"):
+			value = b.math("MULTIPLY",b.math("MULTIPLY",tint[channel],2.0),b.math("SQRT",albd[channel]))
+			layerColor.append(b.math("MULTIPLY",value,value))
+		colorNode = b.nodes.new("ShaderNodeMixRGB")
+		colorNode.location = (b.x,200)
+		b.links.new(i["Prev Color"],colorNode.inputs["Color1"])
+		b.links.new(b.combineColor(*layerColor),colorNode.inputs["Color2"])
+		b.links.new(b.math("MULTIPLY",i["Detail_Color Alpha"],weight),colorNode.inputs["Fac"])
+		roughness = b.lerp(i["Prev Roughness"],b.math("MULTIPLY",b.math("MULTIPLY",nrrh["Red"],2.0),i["Detail_Roughness"]),b.math("MULTIPLY",i["Detail_Roughness_Blend"],weight))
+		metal = b.lerp(i["Prev Metal"],b.math("MULTIPLY",b.math("MULTIPLY",b.math("SUBTRACT",1.0,i["ALBD Alpha"]),2.0),i["Detail_Metal"]),weight)
+
+		#Octahedral decode, a|a| style
+		a = b.math("MULTIPLY_ADD",nrrh["Green"],2.0,-1.0)
+		c = b.math("MULTIPLY_ADD",i["NRRH Alpha"],2.0,-1.0)
+		a = b.math("MULTIPLY",a,b.math("ABSOLUTE",a))
+		c = b.math("MULTIPLY",c,b.math("ABSOLUTE",c))
+		x = b.math("MULTIPLY",b.math("ADD",a,c),0.5)
+		y = b.math("MULTIPLY",b.math("SUBTRACT",a,c),0.5)
+		z = b.math("SUBTRACT",b.math("SUBTRACT",1.0,b.math("ABSOLUTE",x)),b.math("ABSOLUTE",y))
+		x,y,z = b.normalize3(x,y,z)
+		flip = b.greater0(i["UseFlip"])
+		x,y = b.select(flip,b.math("MULTIPLY",y,-1.0),x),b.select(flip,b.math("MULTIPLY",x,-1.0),y)
+		strength = b.math("MULTIPLY",i["DetailNormal"],2.0)
+		prev = b.separateXYZ(i["Prev Normal"])
+		through = b.greater0(i["UseThrough_Normal"])
+		nx,ny,nz = b.normalize3(b.math("MULTIPLY_ADD",x,strength,b.math("MULTIPLY",prev["X"],through)),
+			b.math("MULTIPLY_ADD",y,strength,b.math("MULTIPLY",prev["Y"],through)),
+			b.select(through,prev["Z"],1.0))
+		normal = b.combineXYZ(b.lerp(prev["X"],nx,weight),b.lerp(prev["Y"],ny,weight),b.lerp(prev["Z"],nz,weight))
+		accHeight = b.lerp(i["Prev Height"],height,weight)
+
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		for name,socket in (("Color",colorNode.outputs["Color"]),("Roughness",roughness),("Metal",metal),("Normal",normal),("Height",accHeight),("Weight",weight)):
+			b.links.new(socket,outNode.inputs[name])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	nodeGroupNode.inputs["Prev Normal"].default_value = (0.0,0.0,1.0)
+	return nodeGroupNode
+
+def getMHWildsDetailMergeNodeGroup(nodeTree):
+	#After the R,G,B layers (VFXwe PS #63 %1232..%1288): w = max(mR,mG,mB,0)
+	#ModulateColor: the R,G,B chain starts at 0.5 (color, roughness) and is applied as 2*base*result, metal starts at the base metal and gets the same 2*base* treatment
+	#value = lerp(base, ModulateColor ? 2*base*layered : layered, w), the A layer then lerps on top of this without modulation
+	if "MHWildsDetailMerge" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsDetailMerge"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsDetailMerge")
+		newGroupSockets(nodeGroup,[("Base Color","NodeSocketColor"),("Layer Color","NodeSocketColor"),("Base Roughness","NodeSocketFloat"),("Layer Roughness","NodeSocketFloat"),
+			("Base Metal","NodeSocketFloat"),("Layer Metal","NodeSocketFloat"),("Weight R","NodeSocketFloat"),("Weight G","NodeSocketFloat"),("Weight B","NodeSocketFloat"),("ModulateColor","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor"),("Roughness","NodeSocketFloat"),("Metal","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		inNode = b.nodes.new('NodeGroupInput')
+		i = inNode.outputs
+		weight = b.math("MAXIMUM",b.math("MAXIMUM",i["Weight R"],i["Weight G"]),b.math("MAXIMUM",i["Weight B"],0.0))
+		modulate = b.greater0(i["ModulateColor"])
+		base = b.separate(i["Base Color"])
+		layer = b.separate(i["Layer Color"])
+		color = [b.lerp(base[channel],b.select(modulate,b.math("MULTIPLY",b.math("MULTIPLY",base[channel],2.0),layer[channel]),layer[channel]),weight) for channel in ("Red","Green","Blue")]
+		roughness = b.lerp(i["Base Roughness"],b.select(modulate,b.math("MULTIPLY",b.math("MULTIPLY",i["Base Roughness"],2.0),i["Layer Roughness"]),i["Layer Roughness"]),weight)
+		metal = b.lerp(i["Base Metal"],b.select(modulate,b.math("MULTIPLY",b.math("MULTIPLY",i["Base Metal"],2.0),i["Layer Metal"]),i["Layer Metal"]),weight)
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(b.combineColor(*color),outNode.inputs["Color"])
+		b.links.new(roughness,outNode.inputs["Roughness"])
+		b.links.new(metal,outNode.inputs["Metal"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def getMHWildsDetailNormalNodeGroup(nodeTree):
+	#Detail normal on top of the base normal (VFXwe PS #63 %1612..%1675)
+	#baseWeight = 1, then for R,G,B,A: baseWeight = lerp(baseWeight, max(BaseNormal_Blend_c, 1-Use_c), m_c)
+	#b = normalize(baseWeight*base.xy, baseWeight*(base.z-1)+1), result = normalize(detail.xy + b.xy, b.z)
+	#Tangent space normals come in and out as normal map colors
+	if "MHWildsDetailNormal" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsDetailNormal"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsDetailNormal")
+		socketList = [("Base Normal Color","NodeSocketColor"),("Detail Normal","NodeSocketVector")]
+		for channel in ("R","G","B","A"):
+			socketList += [(f"BaseNormal_Blend_{channel}","NodeSocketFloat"),(f"Use_{channel}","NodeSocketFloat"),(f"Weight {channel}","NodeSocketFloat")]
+		newGroupSockets(nodeGroup,socketList,"INPUT")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		inNode = b.nodes.new('NodeGroupInput')
+		i = inNode.outputs
+		baseWeight = 1.0
+		for channel in ("R","G","B","A"):
+			target = b.math("MAXIMUM",i[f"BaseNormal_Blend_{channel}"],b.math("SUBTRACT",1.0,i[f"Use_{channel}"]))
+			baseWeight = b.lerp(baseWeight,target,i[f"Weight {channel}"]) if not isinstance(baseWeight,float) else b.math("MULTIPLY_ADD",b.math("SUBTRACT",target,1.0),i[f"Weight {channel}"],1.0)
+		base = b.separate(i["Base Normal Color"])
+		bx = b.math("MULTIPLY_ADD",base["Red"],2.0,-1.0)
+		by = b.math("MULTIPLY_ADD",base["Green"],2.0,-1.0)
+		bz = b.math("MULTIPLY_ADD",base["Blue"],2.0,-1.0)
+		bx,by,bz = b.normalize3(b.math("MULTIPLY",bx,baseWeight),b.math("MULTIPLY",by,baseWeight),b.math("MULTIPLY_ADD",b.math("SUBTRACT",bz,1.0),baseWeight,1.0))
+		detail = b.separateXYZ(i["Detail Normal"])
+		nx,ny,nz = b.normalize3(b.math("ADD",detail["X"],bx),b.math("ADD",detail["Y"],by),bz)
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(b.combineColor(b.math("MULTIPLY_ADD",nx,0.5,0.5),b.math("MULTIPLY_ADD",ny,0.5,0.5),b.math("MULTIPLY_ADD",nz,0.5,0.5)),outNode.inputs["Color"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def addMHWildsDetailLayerNodes(nodeTree,matInfo):
+	#Detail_ALBD/NRRH R,G,B,A layers masked by DetailMaskMap, applied on the finished base (ColorParam included) before ColorLayer
+	props = matInfo["mPropDict"]
+	textureNodes = matInfo["textureNodeDict"]
+	if not hasLoadedImage(matInfo,"DetailMaskMap") or matInfo["albedoNodeLayerGroup"].currentOutSocket == None:
+		return
+	if "UseDetail" in props and props["UseDetail"].propValue[0] <= 0.0:
+		return
+	channels = [channel for channel in ("R","G","B","A") if hasLoadedImage(matInfo,f"Detail_ALBD_{channel}") and hasLoadedImage(matInfo,f"Detail_NRRH_{channel}")]
+	if not channels:
+		return
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	def propValue(name,default,index = 0):
+		return float(props[name].propValue[index]) if name in props else default
+	maskNode = textureNodes["DetailMaskMap"]
+	maskSep = nodes.new("ShaderNodeSeparateColor")
+	maskSep.location = maskNode.location + Vector((300,0))
+	links.new(maskNode.outputs["Color"],maskSep.inputs["Color"])
+	maskSockets = {"R":maskSep.outputs["Red"],"G":maskSep.outputs["Green"],"B":maskSep.outputs["Blue"],"A":maskNode.outputs["Alpha"]}
+
+	baseColor = matInfo["albedoNodeLayerGroup"].currentOutSocket
+	baseRoughness = matInfo["roughnessNodeLayerGroup"].currentOutSocket
+	metallicSocket = matInfo["metallicNodeLayerGroup"].currentOutSocket
+	baseMetal = None
+	if metallicSocket != None:
+		if matInfo["isDielectric"]:#The metallic stack holds the dielectric value until the end
+			invertNode = nodes.new("ShaderNodeMath")
+			invertNode.operation = "SUBTRACT"
+			invertNode.inputs[0].default_value = 1.0
+			links.new(metallicSocket,invertNode.inputs[1])
+			baseMetal = invertNode.outputs["Value"]
+		else:
+			baseMetal = metallicSocket
+	modulate = propValue("ModulateColor",1.0)
+
+	layerNodes = {}
+	weights = {}
+	prevNode = None
+	mergeNode = None
+	location = maskNode.location + Vector((600,0))
+	for channel in ("R","G","B","A"):
+		if channel not in channels:
+			continue
+		layerNode = getMHWildsDetailLayerNodeGroup(nodeTree)
+		layerNode.label = f"Detail Layer {channel}"
+		layerNode.location = location
+		location = location + Vector((300,-150))
+		uvNode = getMHWildsDetailUVNodeGroup(nodeTree)
+		uvNode.location = textureNodes[f"Detail_ALBD_{channel}"].location + Vector((-300,0))
+		if "UVMap1Node" in nodes:
+			links.new(nodes["UVMap1Node"].outputs["UV"],uvNode.inputs["UV"])
+		linkMHWildsProp(nodeTree,matInfo,f"DetailTile_{channel}",uvNode.inputs["DetailTile"],1.0)
+		linkMHWildsProp(nodeTree,matInfo,f"UseFlip_{channel}",uvNode.inputs["UseFlip"],0.0)
+		linkMHWildsProp(nodeTree,matInfo,f"UseUV_ScaleOffset_{channel}",uvNode.inputs["UseUV_ScaleOffset"],0.0)
+		for index,socketName in enumerate(("ScaleX","ScaleY","OffsetX","OffsetY")):
+			linkMHWildsProp(nodeTree,matInfo,f"UV_ScaleOffset_{channel}",uvNode.inputs[socketName],(1.0,1.0,0.0,0.0)[index],output = index)
+		for textureType in (f"Detail_ALBD_{channel}",f"Detail_NRRH_{channel}"):
+			links.new(uvNode.outputs["Vector"],textureNodes[textureType].inputs["Vector"])
+		links.new(textureNodes[f"Detail_ALBD_{channel}"].outputs["Color"],layerNode.inputs["ALBD"])
+		links.new(textureNodes[f"Detail_ALBD_{channel}"].outputs["Alpha"],layerNode.inputs["ALBD Alpha"])
+		links.new(textureNodes[f"Detail_NRRH_{channel}"].outputs["Color"],layerNode.inputs["NRRH"])
+		links.new(textureNodes[f"Detail_NRRH_{channel}"].outputs["Alpha"],layerNode.inputs["NRRH Alpha"])
+		links.new(maskSockets[channel],layerNode.inputs["Mask"])
+		for socketName,propName,default in (("Use",f"Use_{channel}",0.0),("UseOpacity",f"UseOpacity_{channel}",0.0),("PrevHeight",f"PrevHeight_{channel}",0.0),
+				("UseThrough_Normal",f"UseThrough_Normal_{channel}",0.0),("useOPM","useOPM",0.0),("DetailAlphaRef",f"DetailAlphaRef_{channel}",0.5),
+				("DetailAlphaWidth",f"DetailAlphaWidth_{channel}",0.0),("Detail_Roughness",f"Detail_Roughness_{channel}",0.5),("Detail_Metal",f"Detail_Metal_{channel}",0.5),
+				("DetailNormal",f"DetailNormal_{channel}",0.5),("Detail_Roughness_Blend",f"Detail_Roughness_Blend_{channel}",1.0),("UseFlip",f"UseFlip_{channel}",0.0)):
+			linkMHWildsProp(nodeTree,matInfo,propName,layerNode.inputs[socketName],default)
+		linkMHWildsProp(nodeTree,matInfo,f"Detail_Color_{channel}",layerNode.inputs["Detail_Color"],(0.5,0.5,0.5,1.0),output = "Color")
+		linkMHWildsProp(nodeTree,matInfo,f"Detail_Color_{channel}",layerNode.inputs["Detail_Color Alpha"],1.0,output = "Alpha")
+
+		if channel == "A":
+			#The A layer works on the merged result without modulation
+			if prevNode != None:
+				mergeNode = getMHWildsDetailMergeNodeGroup(nodeTree)
+				mergeNode.location = location + Vector((0,300))
+				links.new(baseColor,mergeNode.inputs["Base Color"])
+				links.new(prevNode.outputs["Color"],mergeNode.inputs["Layer Color"])
+				links.new(prevNode.outputs["Roughness"],mergeNode.inputs["Layer Roughness"])
+				links.new(prevNode.outputs["Metal"],mergeNode.inputs["Layer Metal"])
+				for weightChannel in ("R","G","B"):
+					if weightChannel in weights:
+						links.new(weights[weightChannel],mergeNode.inputs[f"Weight {weightChannel}"])
+				linkMHWildsProp(nodeTree,matInfo,"ModulateColor",mergeNode.inputs["ModulateColor"],1.0)
+				if baseRoughness != None:
+					links.new(baseRoughness,mergeNode.inputs["Base Roughness"])
+				else:
+					mergeNode.inputs["Base Roughness"].default_value = 1.0
+				if baseMetal != None:
+					links.new(baseMetal,mergeNode.inputs["Base Metal"])
+				links.new(mergeNode.outputs["Color"],layerNode.inputs["Prev Color"])
+				links.new(mergeNode.outputs["Roughness"],layerNode.inputs["Prev Roughness"])
+				links.new(mergeNode.outputs["Metal"],layerNode.inputs["Prev Metal"])
+				links.new(prevNode.outputs["Normal"],layerNode.inputs["Prev Normal"])
+				links.new(prevNode.outputs["Height"],layerNode.inputs["Prev Height"])
+			else:
+				links.new(baseColor,layerNode.inputs["Prev Color"])
+				if baseRoughness != None:
+					links.new(baseRoughness,layerNode.inputs["Prev Roughness"])
+				else:
+					layerNode.inputs["Prev Roughness"].default_value = 1.0
+				if baseMetal != None:
+					links.new(baseMetal,layerNode.inputs["Prev Metal"])
+		elif prevNode == None:
+			#First of R,G,B: color and roughness start at 0.5 with ModulateColor, metal at the base metal
+			if modulate > 0.0:
+				layerNode.inputs["Prev Color"].default_value = (0.5,0.5,0.5,1.0)
+				layerNode.inputs["Prev Roughness"].default_value = 0.5
+			else:
+				links.new(baseColor,layerNode.inputs["Prev Color"])
+				if baseRoughness != None:
+					links.new(baseRoughness,layerNode.inputs["Prev Roughness"])
+			if baseMetal != None:
+				links.new(baseMetal,layerNode.inputs["Prev Metal"])
+		else:
+			for socketName in ("Color","Roughness","Metal","Normal","Height"):
+				links.new(prevNode.outputs[socketName],layerNode.inputs["Prev " + socketName])
+		weights[channel] = layerNode.outputs["Weight"]
+		layerNodes[channel] = layerNode
+		prevNode = layerNode
+
+	if "A" not in layerNodes:
+		#No A layer, merge the R,G,B chain directly
+		mergeNode = getMHWildsDetailMergeNodeGroup(nodeTree)
+		mergeNode.location = location
+		links.new(baseColor,mergeNode.inputs["Base Color"])
+		links.new(prevNode.outputs["Color"],mergeNode.inputs["Layer Color"])
+		links.new(prevNode.outputs["Roughness"],mergeNode.inputs["Layer Roughness"])
+		links.new(prevNode.outputs["Metal"],mergeNode.inputs["Layer Metal"])
+		for weightChannel in ("R","G","B"):
+			if weightChannel in weights:
+				links.new(weights[weightChannel],mergeNode.inputs[f"Weight {weightChannel}"])
+		linkMHWildsProp(nodeTree,matInfo,"ModulateColor",mergeNode.inputs["ModulateColor"],1.0)
+		if baseRoughness != None:
+			links.new(baseRoughness,mergeNode.inputs["Base Roughness"])
+		else:
+			mergeNode.inputs["Base Roughness"].default_value = 1.0
+		if baseMetal != None:
+			links.new(baseMetal,mergeNode.inputs["Base Metal"])
+		resultNode = mergeNode
+	else:
+		resultNode = layerNodes["A"]
+
+	matInfo["albedoNodeLayerGroup"].currentOutSocket = resultNode.outputs["Color"]
+	matInfo["roughnessNodeLayerGroup"].currentOutSocket = resultNode.outputs["Roughness"]
+	metalOut = resultNode.outputs["Metal"]
+	if metallicSocket != None and matInfo["isDielectric"]:
+		invertBackNode = nodes.new("ShaderNodeMath")
+		invertBackNode.operation = "SUBTRACT"
+		invertBackNode.inputs[0].default_value = 1.0
+		invertBackNode.location = resultNode.location + Vector((300,-200))
+		links.new(metalOut,invertBackNode.inputs[1])
+		metalOut = invertBackNode.outputs["Value"]
+	if metallicSocket != None:
+		matInfo["metallicNodeLayerGroup"].currentOutSocket = metalOut
+
+	if matInfo["normalNodeLayerGroup"].currentOutSocket != None:
+		normalNode = getMHWildsDetailNormalNodeGroup(nodeTree)
+		normalNode.location = resultNode.location + Vector((300,-400))
+		links.new(matInfo["normalNodeLayerGroup"].currentOutSocket,normalNode.inputs["Base Normal Color"])
+		links.new(layerNodes[channels[-1]].outputs["Normal"],normalNode.inputs["Detail Normal"])
+		for channel in ("R","G","B","A"):
+			linkMHWildsProp(nodeTree,matInfo,f"BaseNormal_Blend_{channel}",normalNode.inputs[f"BaseNormal_Blend_{channel}"],1.0)
+			if channel in layerNodes:
+				linkMHWildsProp(nodeTree,matInfo,f"Use_{channel}",normalNode.inputs[f"Use_{channel}"],0.0)
+			else:
+				normalNode.inputs[f"Use_{channel}"].default_value = 0.0
+			if channel in weights:
+				links.new(weights[channel],normalNode.inputs[f"Weight {channel}"])
+		matInfo["normalNodeLayerGroup"].currentOutSocket = normalNode.outputs["Color"]
+
+def getMHWildsFilmNodeGroup(nodeTree):
+	#Thin film on the base color, from Base_Equip_ch02_042_0000 PS #63 (lines 2796-2952), identical in VFXwe PS #63
+	#Runs after Detail and ColorLayer, before the PanoramaMap fake refraction
+	#NoV = |dot(V,N)|, d = NoV * saturate(Film_Thickness * FxMap.R)
+	#ior = Film_IOR, with UseBaseColorFilm: Film_IOR - 0.008 + ((0.045 - 0.123*saturate(|1-3h|)) * saturate(|3h-2|) + 0.078) * s (h, s = hue and saturation of the color)
+	#k = 0.5 - 0.5*cos((d - 0.5 + ior) * (24.85, 30.45, 35.0)) * (1 - d), filmFull = 4*color*k*k
+	#FullFIlm: color = filmFull
+	#else UseBaseColorFilm: color = lerp(color, k*max(color.rgb), Film_Blend > 0 ? (1-NoV^3)*FxMap.R*|Film_Blend| : |Film_Blend|*NoV)
+	#else: color = lerp(color, filmFull, FxMap.R*Film_Blend)
+	if "MHWildsFilm" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsFilm"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsFilm")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor"),("Normal","NodeSocketVector"),("FxMap R","NodeSocketFloat"),("Film_Thickness","NodeSocketFloat"),
+			("Film_IOR","NodeSocketFloat"),("Film_Blend","NodeSocketFloat"),("UseBaseColorFilm","NodeSocketFloat"),("FullFIlm","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		inNode = b.nodes.new('NodeGroupInput')
+		i = inNode.outputs
+		geometryNode = b.nodes.new("ShaderNodeNewGeometry")
+		dotNode = b.nodes.new("ShaderNodeVectorMath")
+		dotNode.operation = "DOT_PRODUCT"
+		b.links.new(geometryNode.outputs["Incoming"],dotNode.inputs[0])
+		b.links.new(i["Normal"],dotNode.inputs[1])
+		nov = b.math("ABSOLUTE",dotNode.outputs["Value"])
+		fxR = i["FxMap R"]
+		d = b.math("MULTIPLY",nov,b.math("MULTIPLY",i["Film_Thickness"],fxR,clamp = True))
+
+		hsvNode = b.nodes.new("ShaderNodeSeparateColor")
+		hsvNode.mode = "HSV"
+		b.links.new(i["Color"],hsvNode.inputs["Color"])
+		hue = hsvNode.outputs[0]
+		saturation = hsvNode.outputs[1]
+		hueOffset = b.math("MULTIPLY",b.math("MULTIPLY_ADD",
+			b.math("MULTIPLY_ADD",b.math("ABSOLUTE",b.math("MULTIPLY_ADD",hue,-3.0,1.0),clamp = True),-0.123,0.045),
+			b.math("ABSOLUTE",b.math("MULTIPLY_ADD",hue,3.0,-2.0),clamp = True),0.078),saturation)
+		useBaseFilm = b.greater0(i["UseBaseColorFilm"])
+		ior = b.select(useBaseFilm,b.math("ADD",b.math("SUBTRACT",i["Film_IOR"],0.008),hueOffset),i["Film_IOR"])
+		phase = b.math("ADD",b.math("SUBTRACT",d,0.5),ior)
+		oneMinusD = b.math("SUBTRACT",1.0,d)
+		color = b.separate(i["Color"])
+		maxColor = b.math("MAXIMUM",color["Red"],b.math("MAXIMUM",color["Green"],color["Blue"]))
+		blend = i["Film_Blend"]
+		absBlend = b.math("ABSOLUTE",blend)
+		baseFilmWeight = b.select(b.greater0(blend),
+			b.math("MULTIPLY",b.math("MULTIPLY",b.math("SUBTRACT",1.0,b.math("POWER",nov,3.0)),fxR),absBlend),
+			b.math("MULTIPLY",absBlend,nov))
+		plainWeight = b.math("MULTIPLY",fxR,blend)
+		fullFilm = b.greater0(i["FullFIlm"])
+		result = []
+		for channel,frequency in (("Red",24.85),("Green",30.45),("Blue",35.0)):
+			k = b.math("MULTIPLY_ADD",b.math("MULTIPLY",b.math("COSINE",b.math("MULTIPLY",phase,frequency)),oneMinusD),-0.5,0.5)
+			filmFull = b.math("MULTIPLY",b.math("MULTIPLY",color[channel],4.0),b.math("MULTIPLY",k,k))
+			value = b.select(useBaseFilm,b.lerp(color[channel],b.math("MULTIPLY",k,maxColor),baseFilmWeight),b.lerp(color[channel],filmFull,plainWeight))
+			result.append(b.select(fullFilm,filmFull,value))
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(b.combineColor(*result),outNode.inputs["Color"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def mhWildsFilmActive(props):
+	def value(name):
+		return props[name].propValue[0] if name in props else 0.0
+	return value("FullFIlm") > 0.0 or value("Film_Blend") != 0.0
+
+def addMHWildsFilmNodes(nodeTree,matInfo,mappedNormalSocket = None):
+	props = matInfo["mPropDict"]
+	if not mhWildsFilmActive(props) or matInfo["albedoNodeLayerGroup"].currentOutSocket == None or not hasLoadedImage(matInfo,"FxMap"):
+		return
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	fxNode = matInfo["textureNodeDict"]["FxMap"]
+	filmNode = getMHWildsFilmNodeGroup(nodeTree)
+	filmNode.location = fxNode.location + Vector((600,200))
+	if "FxMapSepNode" in nodes:
+		fxSepNode = nodes["FxMapSepNode"]
+	else:
+		fxSepNode = nodes.new("ShaderNodeSeparateColor")
+		fxSepNode.name = "FxMapSepNode"
+		fxSepNode.location = fxNode.location + Vector((300,0))
+		links.new(fxNode.outputs["Color"],fxSepNode.inputs["Color"])
+	links.new(fxSepNode.outputs["Red"],filmNode.inputs["FxMap R"])
+	if mappedNormalSocket != None:
+		links.new(mappedNormalSocket,filmNode.inputs["Normal"])
+	else:
+		if "geometryNode" not in nodes:
+			geometryNode = nodes.new("ShaderNodeNewGeometry")
+			geometryNode.name = "geometryNode"
+			geometryNode.location = (-800,400)
+		links.new(nodes["geometryNode"].outputs["Normal"],filmNode.inputs["Normal"])
+	for name,default in (("Film_Thickness",0.0),("Film_IOR",0.5),("Film_Blend",0.0),("UseBaseColorFilm",0.0),("FullFIlm",0.0)):
+		linkMHWildsProp(nodeTree,matInfo,name,filmNode.inputs[name],default)
+	links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,filmNode.inputs["Color"])
+	matInfo["albedoNodeLayerGroup"].currentOutSocket = filmNode.outputs["Color"]
+
+def addMHWildsFixedAlphaNodes(nodeTree,matInfo):
+	#Base_Equip_ch02_042_0000 fur: alpha = saturate(ColorParam.a * 2 * alphaSource * Fixed_AlphaMap.R), Fixed_AlphaMap on the plain first UV
+	#The ColorParam.a * alphaSource part is already in alphaSocket for MH Wilds
+	if not hasLoadedImage(matInfo,"Fixed_AlphaMap") or matInfo["alphaSocket"] == None:
+		return
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	fixedNode = matInfo["textureNodeDict"]["Fixed_AlphaMap"]
+	if "UVMap1Node" in nodes:
+		links.new(nodes["UVMap1Node"].outputs["UV"],fixedNode.inputs["Vector"])
+	fixedSepNode = nodes.new("ShaderNodeSeparateColor")
+	fixedSepNode.location = fixedNode.location + Vector((300,0))
+	links.new(fixedNode.outputs["Color"],fixedSepNode.inputs["Color"])
+	multNode = nodes.new("ShaderNodeMath")
+	multNode.operation = "MULTIPLY"
+	multNode.location = fixedNode.location + Vector((600,0))
+	links.new(matInfo["alphaSocket"],multNode.inputs[0])
+	links.new(fixedSepNode.outputs["Red"],multNode.inputs[1])
+	doubleNode = nodes.new("ShaderNodeMath")
+	doubleNode.operation = "MULTIPLY"
+	doubleNode.use_clamp = True
+	doubleNode.location = fixedNode.location + Vector((800,0))
+	links.new(multNode.outputs["Value"],doubleNode.inputs[0])
+	doubleNode.inputs[1].default_value = 2.0
+	matInfo["alphaSocket"] = doubleNode.outputs["Value"]
+
+MHWILDS_TIME_GROUP = "MHWildsTime"
+
+def getMHWildsTimeNodeGroup(nodeTree):
+	#Shared clock for animated MH Wilds material effects
+	#Seconds = (frame - frame_start) / fps, driven by the scene frame so it lines up with baked animation and renders
+	#Animate = 0 keeps every material at its t = 0 state (static preview), 1 plays along with the timeline
+	if MHWILDS_TIME_GROUP in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups[MHWILDS_TIME_GROUP]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name=MHWILDS_TIME_GROUP)
+		newGroupSockets(nodeGroup,[("Seconds","NodeSocketFloat")],"OUTPUT")
+		nodes = nodeGroup.nodes
+		secondsNode = nodes.new("ShaderNodeValue")
+		secondsNode.name = "Seconds"
+		secondsNode.label = "Seconds (driven by frame)"
+		animateNode = nodes.new("ShaderNodeValue")
+		animateNode.name = "Animate"
+		animateNode.label = "Animate (0 = static)"
+		animateNode.location = (0,-200)
+		animateNode.outputs[0].default_value = 0.0
+		multNode = nodes.new("ShaderNodeMath")
+		multNode.operation = "MULTIPLY"
+		multNode.location = (200,0)
+		nodeGroup.links.new(secondsNode.outputs[0],multNode.inputs[0])
+		nodeGroup.links.new(animateNode.outputs[0],multNode.inputs[1])
+		outNode = nodes.new("NodeGroupOutput")
+		outNode.location = (400,0)
+		nodeGroup.links.new(multNode.outputs[0],outNode.inputs["Seconds"])
+		scene = bpy.context.scene
+		try:
+			fcurve = nodeGroup.driver_add('nodes["Seconds"].outputs[0].default_value')
+			driver = fcurve.driver
+			driver.type = "SCRIPTED"
+			for name,path in (("fps","render.fps"),("fps_base","render.fps_base"),("start","frame_start")):
+				variable = driver.variables.new()
+				variable.name = name
+				variable.type = "SINGLE_PROP"
+				variable.targets[0].id_type = "SCENE"
+				variable.targets[0].id = scene
+				variable.targets[0].data_path = path
+			#Simple expression, runs without Python auto run
+			driver.expression = "(frame - start) * fps_base / fps"
+		except Exception as err:
+			print(f"Unable to create the material animation driver: {err}")
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	nodeGroupNode.label = "MH Wilds Material Time"
+	return nodeGroupNode
+
+def getMHWildsAnimEmitNodeGroup(nodeTree):
+	#AnimEmit / WaveEmit and SecEmit animation, VFXwe PS #63 %1949..%1970 and %1987..%2004, same code in Base_Equip_ch02_042_0000
+	#t = seconds * Speed (the game clock is userGlobalParams[0].x * 0.001, Use_InstanceID adds the instance id, taken as 0 here)
+	#phase = UseWave ? Wave * (t + FxMap.B) : t, factor = max(0, lerp(1, Min, 0.5 + 0.5*sin(phase))), Min == 1 means off
+	if "MHWildsAnimEmit" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsAnimEmit"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsAnimEmit")
+		newGroupSockets(nodeGroup,[("Seconds","NodeSocketFloat"),("Min","NodeSocketFloat"),("Speed","NodeSocketFloat"),("UseWave","NodeSocketFloat"),
+			("Wave","NodeSocketFloat"),("FxMap B","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Factor","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		t = b.math("MULTIPLY",i["Seconds"],i["Speed"])
+		phase = b.select(b.math("COMPARE",i["UseWave"],0.0,0.0),t,b.math("MULTIPLY",i["Wave"],b.math("ADD",t,i["FxMap B"])))
+		wave = b.math("MULTIPLY_ADD",b.math("SINE",phase),0.5,0.5)
+		factor = b.math("MAXIMUM",b.lerp(1.0,i["Min"],wave),0.0)
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(factor,outNode.inputs["Factor"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def getMHWildsMoveEmitNodeGroup(nodeTree):
+	#MoveEmit (static, VFXwe PS #63 lines 2606-2643), replaces AnimEmit when Use_MoveEmit > 0
+	#Use_WaveMove: (0.5 + 0.5*cos((MoveEmit + FxMap.B) / max(Width,1e-4)))^3
+	#else: s = smoothstep(saturate(saturate(Width + FxMap.B - (1-MoveEmit)*(Width+1)) / Width)), factor = 4*s*(1-s)
+	if "MHWildsMoveEmit" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsMoveEmit"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsMoveEmit")
+		newGroupSockets(nodeGroup,[("MoveEmit","NodeSocketFloat"),("MoveEmit_Width","NodeSocketFloat"),("Use_WaveMove","NodeSocketFloat"),("FxMap B","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Factor","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		width = i["MoveEmit_Width"]
+		waveValue = b.math("MULTIPLY_ADD",b.math("COSINE",b.math("DIVIDE",b.math("ADD",i["MoveEmit"],i["FxMap B"]),b.math("MAXIMUM",width,1.0e-4))),0.5,0.5)
+		waveFactor = b.math("POWER",waveValue,3.0)
+		x = b.math("SUBTRACT",b.math("ADD",width,i["FxMap B"]),b.math("MULTIPLY",b.math("SUBTRACT",1.0,i["MoveEmit"]),b.math("ADD",width,1.0)),clamp = True)
+		s = b.smoothstep01(b.math("DIVIDE",x,width,clamp = True))
+		bandFactor = b.math("MULTIPLY",b.math("MULTIPLY",s,4.0),b.math("SUBTRACT",1.0,s))
+		factor = b.select(b.math("COMPARE",i["Use_WaveMove"],0.0,0.0),bandFactor,waveFactor)
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(factor,outNode.inputs["Factor"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def getMHWildsVectorEmitNodeGroup(nodeTree):
+	#VectorEmit, VFXwe PS #63 lines 823-830, %372..%411: VectorEmitMap.RG = octahedral tangent space direction, .B = strength
+	#s = saturate(dot(V, n))*0.5 + 0.5, factor = VectorEmitMap.B * (power+6)/6 * s^power
+	#Also outputs the world direction and bitangent, ParallaxEmit uses them
+	if "MHWildsVectorEmit" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsVectorEmit"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsVectorEmit")
+		newGroupSockets(nodeGroup,[("VectorEmitMap","NodeSocketColor"),("VectorEmit_power","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Factor","NodeSocketFloat"),("Direction","NodeSocketVector"),("Bitangent","NodeSocketVector")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		vem = b.separate(i["VectorEmitMap"])
+		ex = b.math("MULTIPLY_ADD",vem["Red"],2.0,-1.0)
+		ey = b.math("MULTIPLY_ADD",vem["Green"],2.0,-1.0)
+		z = b.math("SUBTRACT",b.math("SUBTRACT",1.0,b.math("ABSOLUTE",ex)),b.math("ABSOLUTE",ey))
+		folded = b.math("LESS_THAN",z,0.0)
+		fx = b.math("MULTIPLY",b.math("SUBTRACT",1.0,b.math("ABSOLUTE",ey)),b.math("SIGN",ex))
+		fy = b.math("MULTIPLY",b.math("SUBTRACT",1.0,b.math("ABSOLUTE",ex)),b.math("SIGN",ey))
+		ex,ey = b.select(folded,fx,ex),b.select(folded,fy,ey)
+		nx,ny,nz = b.normalize3(ex,ey,z)
+		#Tangent to world through a normal map node on the first UV
+		normalMapNode = b.nodes.new("ShaderNodeNormalMap")
+		normalMapNode.space = "TANGENT"
+		normalMapNode.uv_map = "UVMap0"
+		b.links.new(b.combineColor(b.math("MULTIPLY_ADD",nx,0.5,0.5),b.math("MULTIPLY_ADD",ny,0.5,0.5),b.math("MULTIPLY_ADD",nz,0.5,0.5)),normalMapNode.inputs["Color"])
+		bitangentNode = b.nodes.new("ShaderNodeNormalMap")
+		bitangentNode.space = "TANGENT"
+		bitangentNode.uv_map = "UVMap0"
+		bitangentNode.inputs["Color"].default_value = (0.5,1.0,0.5,1.0)
+		geometryNode = b.nodes.new("ShaderNodeNewGeometry")
+		dotNode = b.nodes.new("ShaderNodeVectorMath")
+		dotNode.operation = "DOT_PRODUCT"
+		b.links.new(geometryNode.outputs["Incoming"],dotNode.inputs[0])
+		b.links.new(normalMapNode.outputs["Normal"],dotNode.inputs[1])
+		s = b.math("MULTIPLY_ADD",b.math("MULTIPLY",dotNode.outputs["Value"],1.0,clamp = True),0.5,0.5)
+		power = i["VectorEmit_power"]
+		factor = b.math("MULTIPLY",b.math("MULTIPLY",vem["Blue"],b.math("DIVIDE",b.math("ADD",power,6.0),6.0)),b.math("POWER",s,power))
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(factor,outNode.inputs["Factor"])
+		b.links.new(normalMapNode.outputs["Normal"],outNode.inputs["Direction"])
+		b.links.new(bitangentNode.outputs["Normal"],outNode.inputs["Bitangent"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def getMHWildsParallaxEmitUVNodeGroup(nodeTree):
+	#ParallaxEmit UV, VFXwe PS #63 %412..%443: Tp = cross(n, B), Bp = cross(n, Tp), h = -ParallaxEmit_Height (the per frame dither around it averages out)
+	#uv = (uv0.x + h*dot(I,Tp), uv0.y - h*dot(I,Bp)) in D3D space with I = camera to surface, so Blender V gets + h*dot(I,Bp)
+	if "MHWildsParallaxEmitUV" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsParallaxEmitUV"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsParallaxEmitUV")
+		newGroupSockets(nodeGroup,[("UV","NodeSocketVector"),("Direction","NodeSocketVector"),("Bitangent","NodeSocketVector"),("ParallaxEmit_Height","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Vector","NodeSocketVector")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		def vector(operation,a,c):
+			node = b.nodes.new("ShaderNodeVectorMath")
+			node.operation = operation
+			b.links.new(a,node.inputs[0])
+			b.links.new(c,node.inputs[1])
+			return node.outputs["Value" if operation == "DOT_PRODUCT" else "Vector"]
+		geometryNode = b.nodes.new("ShaderNodeNewGeometry")
+		scaleNode = b.nodes.new("ShaderNodeVectorMath")
+		scaleNode.operation = "SCALE"
+		scaleNode.inputs["Scale"].default_value = -1.0
+		b.links.new(geometryNode.outputs["Incoming"],scaleNode.inputs[0])
+		cameraToSurface = scaleNode.outputs["Vector"]
+		tangentP = vector("CROSS_PRODUCT",i["Direction"],i["Bitangent"])
+		bitangentP = vector("CROSS_PRODUCT",i["Direction"],tangentP)
+		h = b.math("MULTIPLY",i["ParallaxEmit_Height"],-1.0)
+		uv = b.separateXYZ(i["UV"])
+		u = b.math("MULTIPLY_ADD",h,vector("DOT_PRODUCT",cameraToSurface,tangentP),uv["X"])
+		v = b.math("MULTIPLY_ADD",h,vector("DOT_PRODUCT",cameraToSurface,bitangentP),uv["Y"])
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(b.combineXYZ(u,v,0.0),outNode.inputs["Vector"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def getMHWildsBlendNormalNodeGroup(nodeTree):
+	#SkinEdit BlendNormalMap, Base_ATOS_SkinEdit_VFX PS #61 %431..%464
+	#P = NormalBlendParam, P > 0: n.xy += 2P*(BlendNormalMap.RG - 128/255), P < 0: n.xy -= 2P*(BlendNormalMap.BA - 128/255), then normalize with the base z
+	if "MHWildsBlendNormal" in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups["MHWildsBlendNormal"]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name="MHWildsBlendNormal")
+		newGroupSockets(nodeGroup,[("Base Normal Color","NodeSocketColor"),("BlendNormalMap","NodeSocketColor"),("BlendNormalMap Alpha","NodeSocketFloat"),("NormalBlendParam","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		base = b.separate(i["Base Normal Color"])
+		bx,by,bz = b.normalize3(b.math("MULTIPLY_ADD",base["Red"],2.0,-1.0),b.math("MULTIPLY_ADD",base["Green"],2.0,-1.0),b.math("MULTIPLY_ADD",base["Blue"],2.0,-1.0))
+		blend = b.separate(i["BlendNormalMap"])
+		param = i["NormalBlendParam"]
+		positive = b.math("GREATER_THAN",param,0.0)
+		offsetX = b.select(positive,blend["Red"],blend["Blue"])
+		offsetY = b.select(positive,blend["Green"],i["BlendNormalMap Alpha"])
+		scale = b.math("MULTIPLY",b.math("ABSOLUTE",param),2.0)
+		nx,ny,nz = b.normalize3(b.math("MULTIPLY_ADD",b.math("SUBTRACT",offsetX,128.0/255.0),scale,bx),b.math("MULTIPLY_ADD",b.math("SUBTRACT",offsetY,128.0/255.0),scale,by),bz)
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(b.combineColor(b.math("MULTIPLY_ADD",nx,0.5,0.5),b.math("MULTIPLY_ADD",ny,0.5,0.5),b.math("MULTIPLY_ADD",nz,0.5,0.5)),outNode.inputs["Color"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
+def mhWildsPropValue(props,name,default = 0.0,index = 0):
+	return float(props[name].propValue[index]) if name in props else default
+
+def mhWildsTextureNeeded(textureType,props):
+	#Textures that only matter when the material turns the matching feature on, None means no special rule
+	value = lambda name,default = 0.0: mhWildsPropValue(props,name,default)
+	fakeRefraction = value("FakeRefraction_Blend") != 0.0
+	if textureType == "PanoramaMap":
+		return fakeRefraction
+	if textureType == "FxMap":
+		animWave = value("AnimEmit_Min",1.0) != 1.0 and value("UseWaveEmit") != 0.0
+		secWave = value("SecEmit_Anim_Min",1.0) != 1.0 and value("SecEmit_Anim_UseWaveEmit") != 0.0
+		return fakeRefraction or mhWildsFilmActive(props) or value("Use_MoveEmit") > 0.0 or animWave or secWave
+	if textureType == "VectorEmitMap":
+		return value("UseVectorEmit") > 0.0 or value("UseParallaxEmit") > 0.0
+	if textureType == "BlendNormalMap":
+		return value("NormalBlendParam") != 0.0
+	return None
+
+def addMHWildsBlendNormalNodes(nodeTree,matInfo):
+	props = matInfo["mPropDict"]
+	param = mhWildsPropValue(props,"NormalBlendParam")
+	if param == 0.0 or not hasLoadedImage(matInfo,"BlendNormalMap") or matInfo["normalNodeLayerGroup"].currentOutSocket == None:
+		return
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	blendNode = matInfo["textureNodeDict"]["BlendNormalMap"]
+	if "UVMap1Node" in nodes:#Always the first UV
+		links.new(nodes["UVMap1Node"].outputs["UV"],blendNode.inputs["Vector"])
+	groupNode = getMHWildsBlendNormalNodeGroup(nodeTree)
+	groupNode.location = blendNode.location + Vector((300,0))
+	links.new(matInfo["normalNodeLayerGroup"].currentOutSocket,groupNode.inputs["Base Normal Color"])
+	links.new(blendNode.outputs["Color"],groupNode.inputs["BlendNormalMap"])
+	links.new(blendNode.outputs["Alpha"],groupNode.inputs["BlendNormalMap Alpha"])
+	linkMHWildsProp(nodeTree,matInfo,"NormalBlendParam",groupNode.inputs["NormalBlendParam"],param)
+	matInfo["normalNodeLayerGroup"].currentOutSocket = groupNode.outputs["Color"]
+
+def getMHWildsFxMapSeparateNode(nodeTree,matInfo):
+	nodes = nodeTree.nodes
+	if "FxMapSepNode" in nodes:
+		return nodes["FxMapSepNode"]
+	fxNode = matInfo["textureNodeDict"]["FxMap"]
+	fxSepNode = nodes.new("ShaderNodeSeparateColor")
+	fxSepNode.name = "FxMapSepNode"
+	fxSepNode.location = fxNode.location + Vector((300,0))
+	nodeTree.links.new(fxNode.outputs["Color"],fxSepNode.inputs["Color"])
+	return fxSepNode
+
+def addMHWildsEmissiveNodes(nodeTree,matInfo):
+	#VectorEmit, ParallaxEmit, MoveEmit, AnimEmit/WaveEmit and SecEmit on top of the EmissiveMap setup from newEMINode
+	props = matInfo["mPropDict"]
+	if not hasLoadedImage(matInfo,"EmissiveMap"):
+		return
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	value = lambda name,default = 0.0: mhWildsPropValue(props,name,default)
+	emissiveNode = matInfo["textureNodeDict"]["EmissiveMap"]
+	location = emissiveNode.location + Vector((0,-700))
+	fxB = None
+	if hasLoadedImage(matInfo,"FxMap"):
+		fxB = getMHWildsFxMapSeparateNode(nodeTree,matInfo).outputs["Blue"]
+
+	#VectorEmit direction is computed whenever the map is loaded, ParallaxEmit reuses it
+	vectorEmitNode = None
+	if hasLoadedImage(matInfo,"VectorEmitMap") and (value("UseVectorEmit") > 0.0 or value("UseParallaxEmit") > 0.0):
+		vectorEmitMapNode = matInfo["textureNodeDict"]["VectorEmitMap"]
+		vectorEmitMapNode.image.colorspace_settings.name = "Non-Color"
+		vectorEmitNode = getMHWildsVectorEmitNodeGroup(nodeTree)
+		vectorEmitNode.location = vectorEmitMapNode.location + Vector((300,0))
+		links.new(vectorEmitMapNode.outputs["Color"],vectorEmitNode.inputs["VectorEmitMap"])
+		linkMHWildsProp(nodeTree,matInfo,"VectorEmit_power",vectorEmitNode.inputs["VectorEmit_power"],6.0)
+
+	#ParallaxEmit: a second EmissiveMap sample at the shifted UV, blended by ParallaxEmit_Blend (fraction of dithered pixels that use the shift)
+	emissiveColor = emissiveNode.outputs["Color"]
+	emissiveAlpha = emissiveNode.outputs["Alpha"]
+	if vectorEmitNode != None and value("UseParallaxEmit") > 0.0 and "UVMap1Node" in nodes and emissiveNode.bl_idname == "ShaderNodeTexImage":
+		parallaxUVNode = getMHWildsParallaxEmitUVNodeGroup(nodeTree)
+		parallaxUVNode.location = location
+		links.new(nodes["UVMap1Node"].outputs["UV"],parallaxUVNode.inputs["UV"])
+		links.new(vectorEmitNode.outputs["Direction"],parallaxUVNode.inputs["Direction"])
+		links.new(vectorEmitNode.outputs["Bitangent"],parallaxUVNode.inputs["Bitangent"])
+		linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Height",parallaxUVNode.inputs["ParallaxEmit_Height"],0.0)
+		parallaxNode = nodes.new("ShaderNodeTexImage")
+		parallaxNode.name = "EmissiveMap_Parallax"
+		parallaxNode.label = "EmissiveMap (ParallaxEmit)"
+		parallaxNode.image = emissiveNode.image
+		parallaxNode.location = location + Vector((300,0))
+		links.new(parallaxUVNode.outputs["Vector"],parallaxNode.inputs["Vector"])
+		blendClampNode = nodes.new("ShaderNodeClamp")#Fraction of dithered pixels that take the shifted sample
+		blendClampNode.location = location + Vector((450,200))
+		linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Blend",blendClampNode.inputs["Value"],0.0)
+		mixColorNode = nodes.new("ShaderNodeMixRGB")
+		mixColorNode.location = location + Vector((600,0))
+		links.new(blendClampNode.outputs["Result"],mixColorNode.inputs["Fac"])
+		links.new(emissiveNode.outputs["Color"],mixColorNode.inputs["Color1"])
+		links.new(parallaxNode.outputs["Color"],mixColorNode.inputs["Color2"])
+		mixAlphaNode = nodes.new("ShaderNodeMath")
+		mixAlphaNode.operation = "MULTIPLY_ADD"
+		mixAlphaNode.location = location + Vector((600,-200))
+		subNode = nodes.new("ShaderNodeMath")
+		subNode.operation = "SUBTRACT"
+		subNode.location = location + Vector((450,-200))
+		links.new(parallaxNode.outputs["Alpha"],subNode.inputs[0])
+		links.new(emissiveNode.outputs["Alpha"],subNode.inputs[1])
+		links.new(subNode.outputs["Value"],mixAlphaNode.inputs[0])
+		links.new(blendClampNode.outputs["Result"],mixAlphaNode.inputs[1])
+		links.new(emissiveNode.outputs["Alpha"],mixAlphaNode.inputs[2])
+		#Everything that read the plain sample now reads the blended one
+		for link in list(emissiveNode.outputs["Color"].links):
+			if link.to_node != mixColorNode:
+				links.new(mixColorNode.outputs["Color"],link.to_socket)
+		emissiveColor = mixColorNode.outputs["Color"]
+		emissiveAlpha = mixAlphaNode.outputs["Value"]
+		location = location + Vector((0,-400))
+
+	strengthFactors = []
+	vectorEmitFactor = None
+	if vectorEmitNode != None and value("UseVectorEmit") > 0.0:
+		vectorEmitFactor = vectorEmitNode.outputs["Factor"]
+		strengthFactors.append(vectorEmitFactor)
+
+	timeNode = None
+	if value("Use_MoveEmit") > 0.0:
+		moveNode = getMHWildsMoveEmitNodeGroup(nodeTree)
+		moveNode.location = location
+		for name,default in (("MoveEmit",0.0),("MoveEmit_Width",0.5),("Use_WaveMove",0.0)):
+			linkMHWildsProp(nodeTree,matInfo,name,moveNode.inputs[name],default)
+		if fxB != None:
+			links.new(fxB,moveNode.inputs["FxMap B"])
+		strengthFactors.append(moveNode.outputs["Factor"])
+	elif value("AnimEmit_Min",1.0) != 1.0:
+		timeNode = getMHWildsTimeNodeGroup(nodeTree)
+		timeNode.location = location + Vector((-300,0))
+		animNode = getMHWildsAnimEmitNodeGroup(nodeTree)
+		animNode.label = "AnimEmit"
+		animNode.location = location
+		links.new(timeNode.outputs["Seconds"],animNode.inputs["Seconds"])
+		for socketName,propName,default in (("Min","AnimEmit_Min",1.0),("Speed","AnimEmit_Speed",1.0),("UseWave","UseWaveEmit",0.0),("Wave","AnimEmitWave",1.0)):
+			linkMHWildsProp(nodeTree,matInfo,propName,animNode.inputs[socketName],default)
+		if fxB != None:
+			links.new(fxB,animNode.inputs["FxMap B"])
+		strengthFactors.append(animNode.outputs["Factor"])
+
+	targetGroup = matInfo["emissionStrengthNodeLayerGroup"] if matInfo["emissionStrengthNodeLayerGroup"].currentOutSocket != None else matInfo["emissionColorNodeLayerGroup"]
+	if targetGroup.currentOutSocket != None:
+		for factor in strengthFactors:
+			targetGroup.addMixLayer(factor,factorOutSocket = None,mixType = "MULTIPLY",mixFactor = 1.0)
+
+	#SecEmit: + 2 * EmissiveMap.A * SecondaryEmitColor (after VectorEmit), not scaled by the main emissive params, so it gets its own emission shader
+	secondaryColor = [mhWildsPropValue(props,"SecondaryEmitColor",0.0,index) for index in range(3)] if "SecondaryEmitColor" in props else [0.0,0.0,0.0]
+	if max(secondaryColor) > 0.0:
+		secLocation = location + Vector((0,-400))
+		maskSocket = emissiveAlpha
+		if vectorEmitFactor != None:
+			maskMultNode = nodes.new("ShaderNodeMath")
+			maskMultNode.operation = "MULTIPLY"
+			maskMultNode.location = secLocation
+			links.new(emissiveAlpha,maskMultNode.inputs[0])
+			links.new(vectorEmitFactor,maskMultNode.inputs[1])
+			maskSocket = maskMultNode.outputs["Value"]
+		strengthNode = nodes.new("ShaderNodeMath")
+		strengthNode.operation = "MULTIPLY"
+		strengthNode.location = secLocation + Vector((200,0))
+		links.new(maskSocket,strengthNode.inputs[0])
+		strengthNode.inputs[1].default_value = 2.0 * EMISSION_MULTIPLIER
+		strengthSocket = strengthNode.outputs["Value"]
+		if value("SecEmit_Anim_Min",1.0) != 1.0:
+			if timeNode == None:
+				timeNode = getMHWildsTimeNodeGroup(nodeTree)
+				timeNode.location = secLocation + Vector((-300,-200))
+			secAnimNode = getMHWildsAnimEmitNodeGroup(nodeTree)
+			secAnimNode.label = "SecEmit Anim"
+			secAnimNode.location = secLocation + Vector((0,-200))
+			links.new(timeNode.outputs["Seconds"],secAnimNode.inputs["Seconds"])
+			for socketName,propName,default in (("Min","SecEmit_Anim_Min",1.0),("Speed","SecEmit_Anim_Speed",1.0),("UseWave","SecEmit_Anim_UseWaveEmit",0.0),("Wave","SecEmit_Anim_Wave",1.0)):
+				linkMHWildsProp(nodeTree,matInfo,propName,secAnimNode.inputs[socketName],default)
+			if fxB != None:
+				links.new(fxB,secAnimNode.inputs["FxMap B"])
+			secMultNode = nodes.new("ShaderNodeMath")
+			secMultNode.operation = "MULTIPLY"
+			secMultNode.location = secLocation + Vector((400,0))
+			links.new(strengthSocket,secMultNode.inputs[0])
+			links.new(secAnimNode.outputs["Factor"],secMultNode.inputs[1])
+			strengthSocket = secMultNode.outputs["Value"]
+		secEmissionNode = nodes.new("ShaderNodeEmission")
+		secEmissionNode.label = "SecEmit"
+		secEmissionNode.location = secLocation + Vector((600,0))
+		linkMHWildsProp(nodeTree,matInfo,"SecondaryEmitColor",secEmissionNode.inputs["Color"],(secondaryColor[0],secondaryColor[1],secondaryColor[2],1.0),output = "Color")
+		links.new(strengthSocket,secEmissionNode.inputs["Strength"])
+		addShaderNode = nodes.new("ShaderNodeAddShader")
+		addShaderNode.location = (600,-400)
+		links.new(matInfo["currentShaderOutput"],addShaderNode.inputs[0])
+		links.new(secEmissionNode.outputs["Emission"],addShaderNode.inputs[1])
+		matInfo["currentShaderOutput"] = addShaderNode.outputs["Shader"]
+
+def setMHWildsMaterialAnimation(enabled):
+	if MHWILDS_TIME_GROUP not in bpy.data.node_groups:
+		return False
+	nodeGroup = bpy.data.node_groups[MHWILDS_TIME_GROUP]
+	nodeGroup.nodes["Animate"].outputs[0].default_value = 1.0 if enabled else 0.0
+	nodeGroup.update_tag()
+	return True
+
+def getMHWildsMaterialAnimation():
+	if MHWILDS_TIME_GROUP not in bpy.data.node_groups or "Animate" not in bpy.data.node_groups[MHWILDS_TIME_GROUP].nodes:
+		return None
+	return bpy.data.node_groups[MHWILDS_TIME_GROUP].nodes["Animate"].outputs[0].default_value > 0.0
+
+def addMHWildsColorLayerNodes(nodeTree,matInfo):
+	#Runs after all texture nodes exist, the shader applies it on top of the finished base color
+	props = matInfo["mPropDict"]
+	if not hasLoadedImage(matInfo,"ColorLayer_MaskMap") or matInfo["albedoNodeLayerGroup"].currentOutSocket == None:
+		return
+	if not all(f"ColorLayer_{channel}" in props for channel in ("R","G","B","A")):
+		return
+	links = nodeTree.links
+	maskNode = matInfo["textureNodeDict"]["ColorLayer_MaskMap"]
+	groupNode = getMHWildsColorLayerNodeGroup(nodeTree)
+	groupNode.location = maskNode.location + Vector((600,0))
+	links.new(maskNode.outputs["Color"],groupNode.inputs["Mask"])
+	links.new(maskNode.outputs["Alpha"],groupNode.inputs["MaskAlpha"])
+	for channel in ("R","G","B","A"):
+		propNode = addPropertyNode(props[f"ColorLayer_{channel}"], matInfo["currentPropPos"], nodeTree)
+		links.new(propNode.outputs[0],groupNode.inputs[f"ColorLayer_{channel}"])
+		links.new(propNode.outputs["Alpha"] if "Alpha" in propNode.outputs else propNode.outputs[3],groupNode.inputs[f"ColorLayer_{channel}_Alpha"])
+	for propName,socketName in (("ColorLayer_Mask_Width","Width"),("ColorLayer_Mask_Fade","Fade"),("ColorLayer_Roughness","Roughness")):
+		if propName in props:
+			propNode = addPropertyNode(props[propName], matInfo["currentPropPos"], nodeTree)
+			if "Color" in propNode.outputs:
+				links.new(propNode.outputs["Color"],groupNode.inputs[socketName])
+				links.new(propNode.outputs["Alpha"],groupNode.inputs[socketName+"A"])
+			else:#Vec4
+				combineNode = nodeTree.nodes.new("ShaderNodeCombineColor")
+				combineNode.location = propNode.location + Vector((300,0))
+				for index in range(3):
+					links.new(propNode.outputs[index],combineNode.inputs[index])
+				links.new(combineNode.outputs["Color"],groupNode.inputs[socketName])
+				links.new(propNode.outputs[3],groupNode.inputs[socketName+"A"])
+	if hasLoadedImage(matInfo,"ColorLayer_DetailMaskMap") and "ColorLayer_DetailMask_Blend" in props:
+		#Sampled on the plain first UV times ColorLayer_DetailMask_Tile
+		detailMaskNode = matInfo["textureNodeDict"]["ColorLayer_DetailMaskMap"]
+		detailMaskNode.image.colorspace_settings.name = "Non-Color"
+		detailUVNode = getMHWildsDetailUVNodeGroup(nodeTree)
+		detailUVNode.location = detailMaskNode.location + Vector((-300,0))
+		if "UVMap1Node" in nodeTree.nodes:
+			links.new(nodeTree.nodes["UVMap1Node"].outputs["UV"],detailUVNode.inputs["UV"])
+		linkMHWildsProp(nodeTree,matInfo,"ColorLayer_DetailMask_Tile",detailUVNode.inputs["DetailTile"],1.0)
+		links.new(detailUVNode.outputs["Vector"],detailMaskNode.inputs["Vector"])
+		links.new(detailMaskNode.outputs["Color"],groupNode.inputs["Detail Mask"])
+		links.new(detailMaskNode.outputs["Alpha"],groupNode.inputs["Detail Mask Alpha"])
+		linkMHWildsProp(nodeTree,matInfo,"ColorLayer_DetailMask_Blend",groupNode.inputs["ColorLayer_DetailMask_Blend"],0.0)
+	if "UseOverRay_ColorLayer" in props:
+		links.new(addPropertyNode(props["UseOverRay_ColorLayer"], matInfo["currentPropPos"], nodeTree).outputs["Value"],groupNode.inputs["UseOverRay"])
+	links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,groupNode.inputs["Base"])
+	matInfo["albedoNodeLayerGroup"].currentOutSocket = groupNode.outputs["Color"]
+	matInfo["roughnessNodeLayerGroup"].addMixLayer(groupNode.outputs["Roughness"],factorOutSocket = None,mixType = "MULTIPLY",mixFactor = 1.0)
+
+def addMHWildsPanoramaNodes(nodeTree,matInfo,mappedNormalSocket = None):
+	#color = lerp(color, 2*color*Panorama.rgb, FakeRefraction_Blend * FxMap.G), before lighting
+	props = matInfo["mPropDict"]
+	if not hasLoadedImage(matInfo,"PanoramaMap") or "FakeRefraction_Blend" not in props or props["FakeRefraction_Blend"].propValue[0] == 0.0:
+		return
+	if matInfo["albedoNodeLayerGroup"].currentOutSocket == None:
+		return
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	panoramaNode = matInfo["textureNodeDict"]["PanoramaMap"]
+	if hasattr(panoramaNode,"image") and panoramaNode.image != None:
+		panoramaNode.image.colorspace_settings.name = "sRGB"
+	uvGroupNode = getMHWildsPanoramaUVNodeGroup(nodeTree)
+	uvGroupNode.location = panoramaNode.location + Vector((-300,0))
+	if mappedNormalSocket != None:
+		links.new(mappedNormalSocket,uvGroupNode.inputs["Normal"])
+	else:
+		if "geometryNode" not in nodes:
+			geometryNode = nodes.new("ShaderNodeNewGeometry")
+			geometryNode.name = "geometryNode"
+			geometryNode.location = (-800,400)
+		links.new(nodes["geometryNode"].outputs["Normal"],uvGroupNode.inputs["Normal"])
+	if "Refraction_Index" in props:
+		links.new(addPropertyNode(props["Refraction_Index"], matInfo["currentPropPos"], nodeTree).outputs["Value"],uvGroupNode.inputs["Refraction_Index"])
+	links.new(uvGroupNode.outputs["Vector"],panoramaNode.inputs["Vector"])
+
+	weightNode = nodes.new("ShaderNodeMath")
+	weightNode.operation = "MULTIPLY"
+	weightNode.location = panoramaNode.location + Vector((300,-250))
+	links.new(addPropertyNode(props["FakeRefraction_Blend"], matInfo["currentPropPos"], nodeTree).outputs["Value"],weightNode.inputs[0])
+	if "FxMap" in matInfo["textureNodeDict"]:
+		fxSepNode = nodes.new("ShaderNodeSeparateColor")
+		fxSepNode.location = matInfo["textureNodeDict"]["FxMap"].location + Vector((300,0))
+		links.new(matInfo["textureNodeDict"]["FxMap"].outputs["Color"],fxSepNode.inputs["Color"])
+		links.new(fxSepNode.outputs["Green"],weightNode.inputs[1])
+	else:
+		weightNode.inputs[1].default_value = 1.0
+
+	multNode = nodes.new("ShaderNodeVectorMath")
+	multNode.operation = "MULTIPLY"
+	multNode.location = panoramaNode.location + Vector((300,0))
+	links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,multNode.inputs[0])
+	links.new(panoramaNode.outputs["Color"],multNode.inputs[1])
+	scaleNode = nodes.new("ShaderNodeVectorMath")
+	scaleNode.operation = "SCALE"
+	scaleNode.location = panoramaNode.location + Vector((500,0))
+	links.new(multNode.outputs["Vector"],scaleNode.inputs[0])
+	scaleNode.inputs["Scale"].default_value = 2.0
+	matInfo["albedoNodeLayerGroup"].addMixLayer(scaleNode.outputs["Vector"],factorOutSocket = weightNode.outputs["Value"],mixType = "MIX")
+
+def addMHWildsFakeSphereNodes(nodeTree,matInfo,mappedNormalSocket = None):
+	#MH Wilds view space normal lookups (matcap style), added before AO and lighting like the shaders do
+	nodes = nodeTree.nodes
+	links = nodeTree.links
+	if "geometryNode" in nodes:
+		geometryNode = nodes["geometryNode"]
+	else:
+		geometryNode = nodes.new("ShaderNodeNewGeometry")
+		geometryNode.name = "geometryNode"
+		geometryNode.location = (-800,400)
+
+	#FakeSphere_ALBAMap: color += sphere.rgb * FakeHighLight_Color.rgb
+	#BaseAlpha_MatCap_FX also adds sphere.a * FakeHighLight_Color.a to alpha and uses the normal mapped normal
+	#Base_eyeRefract_Emit uses the geometric normal and only RGB
+	#BaseAlpha_Emit_RoughTransparent binds the same slot and params but its shader was not traced, it gets the eye variant
+	if hasLoadedImage(matInfo,"FakeSphere_ALBAMap"):
+		sphereNode = matInfo["textureNodeDict"]["FakeSphere_ALBAMap"]
+		isMatCap = matInfo["mmtrName"].startswith("basealpha_matcap_fx")
+		if hasattr(sphereNode,"image") and sphereNode.image != None:
+			sphereNode.image.colorspace_settings.name = "sRGB"
+			sphereNode.extension = "EXTEND"#AutomaticClamp sampler
+
+		uvGroupNode = getMHWildsFakeSphereUVNodeGroup(nodeTree)
+		uvGroupNode.location = sphereNode.location + Vector((-300,0))
+		links.new(mappedNormalSocket if isMatCap and mappedNormalSocket != None else geometryNode.outputs["Normal"],uvGroupNode.inputs["Normal"])
+		if "FakeHighLight_Position" in matInfo["mPropDict"]:
+			positionNode = addPropertyNode(matInfo["mPropDict"]["FakeHighLight_Position"], matInfo["currentPropPos"], nodeTree)
+			if "Color" in positionNode.outputs:
+				links.new(positionNode.outputs["Color"],uvGroupNode.inputs["Position"])
+			else:#Vec4
+				positionCombineNode = nodes.new("ShaderNodeCombineColor")
+				positionCombineNode.location = uvGroupNode.location + Vector((-300,0))
+				for index in range(3):
+					links.new(positionNode.outputs[index],positionCombineNode.inputs[index])
+				links.new(positionCombineNode.outputs["Color"],uvGroupNode.inputs["Position"])
+		if "FakeHighLight_ScaleOffset" in matInfo["mPropDict"]:
+			scaleOffsetNode = addPropertyNode(matInfo["mPropDict"]["FakeHighLight_ScaleOffset"], matInfo["currentPropPos"], nodeTree)
+			for index,socketName in enumerate(("ScaleX","ScaleY","OffsetX","OffsetY")):
+				links.new(scaleOffsetNode.outputs[index],uvGroupNode.inputs[socketName])
+		links.new(uvGroupNode.outputs["Vector"],sphereNode.inputs["Vector"])
+
+		sphereColorSocket = sphereNode.outputs["Color"]
+		sphereAlphaSocket = sphereNode.outputs["Alpha"]
+		if "FakeHighLight_Color" in matInfo["mPropDict"]:
+			tintNode = addPropertyNode(matInfo["mPropDict"]["FakeHighLight_Color"], matInfo["currentPropPos"], nodeTree)
+			tintMultNode = nodes.new("ShaderNodeMixRGB")
+			tintMultNode.location = sphereNode.location + Vector((300,0))
+			tintMultNode.blend_type = "MULTIPLY"
+			tintMultNode.inputs["Fac"].default_value = 1.0
+			links.new(sphereColorSocket,tintMultNode.inputs["Color1"])
+			links.new(tintNode.outputs["Color"],tintMultNode.inputs["Color2"])
+			sphereColorSocket = tintMultNode.outputs["Color"]
+
+			alphaMultNode = nodes.new("ShaderNodeMath")
+			alphaMultNode.location = sphereNode.location + Vector((300,-200))
+			alphaMultNode.operation = "MULTIPLY"
+			links.new(sphereAlphaSocket,alphaMultNode.inputs[0])
+			links.new(tintNode.outputs["Alpha"],alphaMultNode.inputs[1])
+			sphereAlphaSocket = alphaMultNode.outputs["Value"]
+		matInfo["albedoNodeLayerGroup"].addMixLayer(sphereColorSocket,factorOutSocket = None,mixType = "ADD",mixFactor = 1.0)
+
+		if isMatCap and matInfo["alphaSocket"] != None:
+			alphaAddNode = nodes.new("ShaderNodeMath")
+			alphaAddNode.location = sphereNode.location + Vector((600,-200))
+			alphaAddNode.operation = "ADD"
+			alphaAddNode.use_clamp = True
+			links.new(matInfo["alphaSocket"],alphaAddNode.inputs[0])
+			links.new(sphereAlphaSocket,alphaAddNode.inputs[1])
+			matInfo["alphaSocket"] = alphaAddNode.outputs["Value"]
+
+	#ToonFakeSphereMap: emissive = 2 * color * sphere.rgb * ToonEmissiveIntensity, geometric normal, no ScaleOffset/Position
+	#Traced on Base_GOLD_Push only, Base_otomo_equip_GOLD and DU_Weapon_Gold(_Wave) bind the same slot and param
+	#In game the color input is the shaded color entering that branch, the albedo layer stack is used here instead
+	if hasLoadedImage(matInfo,"ToonFakeSphereMap") and matInfo["albedoNodeLayerGroup"].currentOutSocket != None:
+		sphereNode = matInfo["textureNodeDict"]["ToonFakeSphereMap"]
+		if hasattr(sphereNode,"image") and sphereNode.image != None:
+			sphereNode.image.colorspace_settings.name = "sRGB"
+			sphereNode.extension = "EXTEND"
+
+		uvGroupNode = getMHWildsFakeSphereUVNodeGroup(nodeTree)
+		uvGroupNode.location = sphereNode.location + Vector((-300,0))
+		links.new(geometryNode.outputs["Normal"],uvGroupNode.inputs["Normal"])
+		links.new(uvGroupNode.outputs["Vector"],sphereNode.inputs["Vector"])
+
+		colorMultNode = nodes.new("ShaderNodeMixRGB")
+		colorMultNode.location = sphereNode.location + Vector((300,0))
+		colorMultNode.blend_type = "MULTIPLY"
+		colorMultNode.inputs["Fac"].default_value = 1.0
+		links.new(matInfo["albedoNodeLayerGroup"].currentOutSocket,colorMultNode.inputs["Color1"])
+		links.new(sphereNode.outputs["Color"],colorMultNode.inputs["Color2"])
+
+		strengthNode = nodes.new("ShaderNodeMath")
+		strengthNode.location = sphereNode.location + Vector((300,-250))
+		strengthNode.operation = "MULTIPLY"
+		strengthNode.inputs[0].default_value = 1.0
+		strengthNode.inputs[1].default_value = 2.0#Vanilla ToonEmissiveIntensity is small (0.1 on ch05_071), so EMISSION_MULTIPLIER is not applied here
+		if "ToonEmissiveIntensity" in matInfo["mPropDict"]:
+			intensityNode = addPropertyNode(matInfo["mPropDict"]["ToonEmissiveIntensity"], matInfo["currentPropPos"], nodeTree)
+			links.new(intensityNode.outputs["Value"],strengthNode.inputs[0])
+
+		#Separate emission shader so it stacks with EmissiveMap instead of sharing its strength
+		emissionNode = nodes.new("ShaderNodeEmission")
+		emissionNode.location = sphereNode.location + Vector((600,0))
+		links.new(colorMultNode.outputs["Color"],emissionNode.inputs["Color"])
+		links.new(strengthNode.outputs["Value"],emissionNode.inputs["Strength"])
+
+		addShaderNode = nodes.new("ShaderNodeAddShader")
+		addShaderNode.location = (600,-200)
+		links.new(matInfo["currentShaderOutput"],addShaderNode.inputs[0])
+		links.new(emissionNode.outputs["Emission"],addShaderNode.inputs[1])
+		matInfo["currentShaderOutput"] = addShaderNode.outputs["Shader"]
 def newEMINode (nodeTree,textureType,matInfo):
 	imageNode = nodeTree.nodes[textureType]
 	currentPos = [imageNode.location[0]+300,imageNode.location[1]]
@@ -1134,7 +2655,7 @@ def newCMMNode (nodeTree,textureType,matInfo):
 			matInfo["albedoNodeLayerGroup"].addMixLayer(RColorNode.outputs["Color"],CMMSeparateNode.outputs["Red"],mixType = "MULTIPLY")
 			matInfo["albedoNodeLayerGroup"].addMixLayer(GColorNode.outputs["Color"],CMMSeparateNode.outputs["Green"],mixType = "MULTIPLY")
 			
-	elif "ColorLayer_R" in matInfo["mPropDict"] and "ColorLayer_G" in matInfo["mPropDict"] and "ColorLayer_B" in matInfo["mPropDict"] and "ColorLayer_A" in matInfo["mPropDict"]:
+	elif "ColorLayer_R" in matInfo["mPropDict"] and "ColorLayer_G" in matInfo["mPropDict"] and "ColorLayer_B" in matInfo["mPropDict"] and "ColorLayer_A" in matInfo["mPropDict"] and matInfo["gameName"] != "MHWILDS":#MH Wilds is done after all texture nodes by addMHWildsColorLayerNodes
 		RColorNode = addPropertyNode(matInfo["mPropDict"]["ColorLayer_R"], matInfo["currentPropPos"], nodeTree)
 		
 		
