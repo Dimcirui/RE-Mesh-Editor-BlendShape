@@ -83,7 +83,35 @@ def resolveMDFGameNameConflict(gameName,mdfFile,filePath):
 	
 
 excludedPropertyNames = set(["~TYPE","_RNA_UI","_vs","s_curve"])
-boolPropertySet = set(["BackFaceNormalFilp","uv1or2_AlphaMap"])#Manually define properties that are bools
+#MMTR reflection of every Wilds master material (FractalMiner MDF_Parameter_Types_Full_20261018) declares user material
+#parameters only as float or float4, so BOOL is just a 0/1 widget over a float and still writes float32 0.0/1.0.
+#boolPropertySet is the 128 names from MDF_Float_Bool_UI_Audit_20261018: every traced shader read only compares them
+#against a constant that separates 0 from 1, and every Wilds MDF sample is a 0/1 scalar.
+#addPropsToPropList also requires the loaded value to be 0 or 1, so other values stay FLOAT.
+boolPropertySet = set([
+	"Abs","BackFaceFlipNormal","ChangeUV","Continuous_Rotation","DetailNormal_Format_A","DetailNormal_Format_B",
+	"DetailNormal_Format_G","DetailNormal_Format_R","Disable_ShadowDepthOffset","DitherShadow","EnableBlackBody",
+	"EnableDistortion","EnableEmissiveIntensityByDistance","EnablePassThrough","EnablePoisson","Enable_UV_Transfer",
+	"Enable_VFXMaterialBlend","Falloff_OnlyY","Fix_BaseColor_to_Emissive","FullFIlm","Invert_Bloom","IsUnderWater",
+	"Legendary","Local_Rotation","MipCheck","ModulateColor","Move_Object","Paint_Symmetry_A","Paint_Symmetry_B",
+	"Paint_Symmetry_C","PrimaryUV_OverMap","R_hane","SecEmit_Anim_UseWaveEmit","Tex_RGB","Type","UV_Scroll",
+	"UseAOSecondaryUV","UseBaseColorFilm","UseBasecolor","UseBend","UseBlackBody","UseCorrected_Distortion",
+	"UseCounterExposureEmit","UseCutomWind","UseDetail","UseDetailMask_A","UseDynamicTimer",
+	"UseEmissiveIntensityByDistance","UseExpensiveParallax","UseFlatNormal","UseFlip_A","UseFlip_B","UseFlip_G",
+	"UseFlip_R","UseFlowMap","UseFlowmap_BaseColor","UseFlowmap_Emissive","UseFlowmap_Normal","UseHairOverMap","UseMSK1",
+	"UseOpacity_A","UseOpacity_B","UseOpacity_G","UseOpacity_R","UseOverRay_ColorLayer","UseParallaxDither",
+	"UseParallaxEmit","UseSSRO","UseSecondaryUV_ColorLayer_MaskMap","UseTempDither","UseTexMask","UseThrough_Normal_A",
+	"UseThrough_Normal_B","UseTriPlanar","UseTriPlanarEmit","UseTriPlanar_ModColor","UseTriPlanar_Top",
+	"UseUV_ScaleOffset_A","UseUV_ScaleOffset_B","UseUV_ScaleOffset_G","UseUV_ScaleOffset_R","UseVectorEmit",
+	"UseVertexColor_mask","UseVertexNormal","UseVertexPivot","UseVertex_Mask","UseVolumeGradient","UseVoronoiTriPlanar",
+	"UseWaterStreamFlowmap","UseWaveEmit","Use_AntiTranslucent_Diffuse","Use_BackFace_Emit","Use_Basecolor_Mask",
+	"Use_Basecolor_to_Emissive","Use_BurnMask_Y","Use_Chain_Pos","Use_CustomBloomPivot","Use_DefaultAlpha","Use_EmitMask",
+	"Use_GlobalBlend_TriPlanar_Color_Top","Use_GpuWind_NormalMask","Use_InstanceID","Use_LocalPos","Use_MoveEmit",
+	"Use_MultiBlend_NRRO","Use_Multiply_BaseColor","Use_Paint_UV_Secondary","Use_Scene_HeightMap",
+	"Use_SecodaryUV_DetailMask","Use_SecondaryUV_WaveMask","Use_VertexColorAlpha","Use_VertexColor_Offset",
+	"Use_VertexColor_Pivot","Use_WaveMove","Use_XYZ_Scale","VTXUse_ClassicVAT","for_otomo","isALBA","isALBA_BaseOnly",
+	"isMSK4","isNRRO","kyoryu_reverse","sRGB_Overlay","stop_alpha","typeBool","useOPM","use_UVScroll","use_overlay"
+	])#Manually define properties that are bools
 colorPropertySet = set([])#Manually define properties that are colors
 matShaderTypeEnum = {
 	"Standard" : 0x0,
@@ -185,10 +213,11 @@ def addPropsToPropList(obj,matPropertyList):
 		newListItem.padding = prop.padding
 		newListItem.frontPadding = prop.frontPadding
 		lowerPropName = prop.propName.lower()
-		if prop.propName in colorPropertySet or (prop.paramCount == 4 and ("color" in lowerPropName or "_col_" in lowerPropName) and "rate" not in lowerPropName):
+		#COLOR is only a widget over a float4; the color field clamps at 0, so negative vectors stay VEC4
+		if prop.propName in colorPropertySet or (prop.paramCount == 4 and ("color" in lowerPropName or "_col_" in lowerPropName) and "rate" not in lowerPropName and min(prop.propValue) >= 0.0):
 			newListItem.data_type = "COLOR"
 			newListItem.color_value = prop.propValue
-		elif prop.paramCount == 1 and ("Use" in prop.propName or "_or_" in prop.propName or prop.propName.startswith("is")) or prop.propName in boolPropertySet:
+		elif prop.paramCount == 1 and prop.propValue[0] in (0.0,1.0) and prop.propName in boolPropertySet:
 			newListItem.data_type = "BOOL"
 			newListItem.bool_value = bool(prop.propValue[0])
 		elif prop.paramCount > 1:
