@@ -163,6 +163,7 @@ from .modules.fbxskel.re_fbxskel_propertyGroups import (
 
 #sfur
 from .modules.sfur.blender_re_sfur import importSFurFile,exportSFurFile
+from .modules.sfur.blender_sfur_preview import WM_OT_RemoveSFurPreview,register_preview,unregister_preview
 from .modules.sfur.re_sfur_operators import (
 	WM_OT_NewSFurHeader,
 	WM_OT_ReindexEntries,
@@ -1846,7 +1847,8 @@ classes = [
 	WM_OT_NewSFurHeader,
 	WM_OT_ReindexEntries,
 	WM_OT_AddFurEntry,
-	#WM_OT_ApplySFurToMeshCollection,
+	WM_OT_ApplySFurToMeshCollection,
+	WM_OT_RemoveSFurPreview,
 	#ui panels
 	OBJECT_PT_SFurObjectModePanel,
 	OBJECT_PT_SFurEntryPanel,
@@ -2005,6 +2007,8 @@ class EXPORT_MT_re_mesh_editor(bpy.types.Menu):
 def re_mesh_editor_export(self, context):
 	self.layout.menu("EXPORT_MT_re_mesh_editor",icon = "MOD_LINEART")
 
+from .modules.mdf.re_mdf_live_preview import registerLivePreview,unregisterLivePreview
+
 def register():
 	addon_updater_ops.register(bl_info)
 	for classEntry in classes:
@@ -2037,6 +2041,8 @@ def register():
 	# Static Normals row under Blender's Shape Keys panel
 	bpy.types.DATA_PT_shape_keys.append(draw_static_normals)
 	register_static_normals()
+	registerLivePreview()
+	register_preview()
 
 	#Blender 4.1 and higher drag and drop operators
 	if bpy.app.version >= (4, 1, 0):
@@ -2048,6 +2054,8 @@ def register():
 		
 	
 def unregister():
+	unregister_preview()
+	unregisterLivePreview()
 	del bpy.types.WindowManager.enableModFileTracking
 	addon_updater_ops.unregister()
 	for classEntry in classes:

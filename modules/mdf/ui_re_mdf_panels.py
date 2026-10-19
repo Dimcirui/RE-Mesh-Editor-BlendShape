@@ -93,9 +93,18 @@ class OBJECT_PT_MDFMaterialPreviewPanel(Panel):
 		col2.label(text = "Mod Directory")
 		col2.prop(re_mdf_toolpanel, "modDirectory")
 		col2.operator("re_mdf.apply_mdf")
-		if "MHWildsTime" in bpy.data.node_groups and "Animate" in bpy.data.node_groups["MHWildsTime"].nodes:
-			animated = bpy.data.node_groups["MHWildsTime"].nodes["Animate"].outputs[0].default_value > 0.0
-			col2.operator("re_mdf.toggle_material_animation",text = "Material Animation: On" if animated else "Material Animation: Off",icon = "PAUSE" if animated else "PLAY",depress = animated)
+		from ..sfur.blender_sfur_preview import draw_controls
+		draw_controls(col2,context,choose_collection=True)
+		clock = bpy.data.node_groups.get("MHWildsTime")
+		ready = clock is not None and "Animate" in clock.nodes
+		playing = ready and clock.nodes["Animate"].outputs[0].default_value > 0.0 and context.screen is not None and context.screen.is_animation_playing
+		row = col2.row(align = True)
+		row.enabled = ready
+		row.operator("re_mdf.toggle_material_animation",text = "Pause Material Effects" if playing else "Play Material Effects",icon = "PAUSE" if playing else "PLAY",depress = playing)
+		row.operator("re_mdf.toggle_material_animation",text = "Reset",icon = "REW").action = "RESET"
+		if not ready:
+			col2.label(text = "No timed material effects loaded.",icon = "INFO")
+			col2.label(text = "Enable AnimEmit/SecEmit, then apply MDF.")
 
 class OBJECT_PT_MDFMaterialLoadSettingsPanel(Panel):
 	bl_label = "MDF Load Settings"

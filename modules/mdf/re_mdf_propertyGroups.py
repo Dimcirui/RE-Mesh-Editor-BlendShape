@@ -15,6 +15,7 @@ from bpy.props import (StringProperty,
 from .file_re_mdf import gameNameMDFVersionDict
 from .blender_re_mesh_mdf import importMDF
 from .re_mdf_presets import reloadPresets
+from .re_mdf_live_preview import STRUCTURAL_PROPS,propertyValues,updatePropertyNode,requestLivePreviewUpdate
 
 
 
@@ -45,6 +46,7 @@ try:
 	editablePropsSet.update(MHWILDS_LIVE_PROPS)
 except Exception as err:
 	print(f"Unable to load MH Wilds preview properties - {str(err)}")
+editablePropsSet.update(STRUCTURAL_PROPS)
 #print(editablePropsSet)
 
 def filterMDFCollection(self, collection):
@@ -101,50 +103,21 @@ def update_mdfCollection(self, context):#Set mesh collection automatically if it
 		self.meshCollection = bpy.data.collections[self.mdfCollection.name.replace(".mdf2",".mesh")]
 								
 def update_materialNodes(self,context):
+	if self.prop_name not in editablePropsSet:
+		return
 	obj = self.id_data
-	if self.prop_name in editablePropsSet:
-		#matName = obj.re_mdf_material.materialName
-		if obj.re_mdf_material.linkedMaterial == None:
-			linkBlenderMaterial(obj, obj.re_mdf_material.materialName)
-		
-		#TODO filter by collection
-		if obj.re_mdf_material.linkedMaterial != None:
-			node = obj.re_mdf_material.linkedMaterial.node_tree.nodes.get(self.prop_name,None)
-			if node != None:
-				#print(self.data_type)
-				#print(node.name)
-				if self.data_type == "FLOAT":
-					value = self.float_value
-					node.outputs["Value"].default_value = value
-				elif self.data_type == "VEC4":
-					value = list(self.float_vector_value)
-					if "Color" in node.inputs:#Color named float4 with negative components is listed as VEC4 but built as a color node
-						node.inputs["Color"].default_value = value
-						node.inputs["Alpha"].default_value = value[3]
-					else:
-						node.inputs[0].default_value = value[0]
-						node.inputs[1].default_value = value[1]
-						node.inputs[2].default_value = value[2]
-						node.inputs[3].default_value = value[3]
-				elif self.data_type == "COLOR":
-					value = list(self.color_value)
-					node.inputs["Color"].default_value = value
-					if "Alpha" in node.inputs:#Color property nodes carry the 4th component separately
-						node.inputs["Alpha"].default_value = value[3]
-	
-				elif self.data_type == "BOOL":
-					if self.bool_value:
-						value = 1.0
-					else:
-						value = 0.0
-					node.outputs["Value"].default_value = value
-				else:
-					value = 0.0
-					node.outputs["Value"].default_value = value
-	
-		
-			
-			#print(f"Set Prop on {obj.name} - {matName} - {self.prop_name} - {self.data_type} - {str(value)}")
+	if obj.re_mdf_material.linkedMaterial == None:
+		linkBlenderMaterial(obj,obj.re_mdf_material.materialName)
+	material = obj.re_mdf_material.linkedMaterial
+	if material == None or material.node_tree == None:
+		return
+	updatePropertyNode(material.node_tree,self.prop_name,propertyValues(self))
+	from ..sfur.blender_sfur_preview import sync_material_property
+	sync_material_property(material,self.prop_name,propertyValues(self))
+	requestLivePreviewUpdate(obj,self.prop_name)
+	if self.prop_name in ("Fur_Push","Fur_Stand"):
+		from ..sfur.blender_sfur_preview import request_update
+		request_update(material)
 
 def update_modDirectoryRelPathToAbs(self,context):
 	try:

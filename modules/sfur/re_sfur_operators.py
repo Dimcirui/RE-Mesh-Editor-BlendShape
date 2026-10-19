@@ -87,17 +87,13 @@ class WM_OT_ApplySFurToMeshCollection(Operator):
 	def poll(self,context):
 		return context.scene.re_mdf_toolpanel.sFurCollection is not None
 	
+	bl_options = {'UNDO'}
 	def execute(self, context):
-		#reindexMaterials()
-		sFurCollection = bpy.context.scene.re_mdf_toolpanel.sFurCollection
-		meshCollection = bpy.context.scene.re_mdf_toolpanel.meshCollection
-		
-		#TODO
-		
-		if sFurCollection != None and meshCollection != None:
-			
-			self.report({"INFO"},"Applied SFur to mesh collection.")
+		from .blender_sfur_preview import apply_preview
+		try:
+			count=apply_preview(context)
+			self.report({'INFO'},f"Built static SFur preview for {count} mesh/entry pair(s).")
 			return {'FINISHED'}
-		else:
-			self.report({"ERROR"},"Invalid mesh or SFur collection.")
+		except Exception as error:
+			self.report({'ERROR'},str(error))
 			return {'CANCELLED'}

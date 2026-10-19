@@ -38,7 +38,8 @@ class OBJECT_PT_SFurObjectModePanel(Panel):
 		layout.prop_search(re_mdf_toolpanel, "sFurCollection",bpy.data,"collections",icon = "COLLECTION_COLOR_08")
 		layout.operator("re_sfur.add_sfur_entry")
 		layout.operator("re_sfur.reindex_entries")
-		#layout.operator("re_sfur.apply_sfur")
+		from .blender_sfur_preview import draw_controls
+		draw_controls(layout,context)
 		
 		
 		
@@ -61,8 +62,9 @@ class OBJECT_PT_SFurEntryPanel(Panel):
 		layout = self.layout
 		obj = context.active_object
 		re_sfur_data = obj.re_sfur_data
-		layout.label(icon = "ERROR",text="Fur effects are not shown in Blender yet.")
-		layout.label(text="Using EMV Engine to tweak fur parameters while in game is advised.")
+		layout.label(text="Static preview; wind and physics are not simulated.")
+		from .blender_sfur_preview import draw_controls
+		draw_controls(layout,context)
 		split = layout.split(factor=0.025)
 		col1 = split.column()
 		col2 = split.column()

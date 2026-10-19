@@ -132,21 +132,63 @@ class WM_OT_ApplyMDFToMeshCollection(Operator):
 			self.report({"ERROR"},"Invalid mesh or MDF collection.")
 			return {'CANCELLED'}
 		return {'FINISHED'}
+def _bindMaterialAnimationClock(scene):
+	#One shared clock: playing from another scene must use that scene's fps/start.
+	clock = bpy.data.node_groups.get("MHWildsTime")
+	if clock is None or "Seconds" not in clock.nodes or "Animate" not in clock.nodes:
+		return False
+	fcurve = clock.driver_add('nodes["Seconds"].outputs[0].default_value')
+	driver = fcurve.driver
+	driver.type = "SCRIPTED"
+	for variable in list(driver.variables):
+		driver.variables.remove(variable)
+	for name,path in (("fps","render.fps"),("fps_base","render.fps_base"),("start","frame_start")):
+		variable = driver.variables.new()
+		variable.name = name
+		variable.type = "SINGLE_PROP"
+		variable.targets[0].id_type = "SCENE"
+		variable.targets[0].id = scene
+		variable.targets[0].data_path = path
+	driver.expression = "(frame - start) * fps_base / fps"
+	clock.update_tag()
+	return True
+
 class WM_OT_ToggleMaterialAnimation(Operator):
-	bl_label = "Toggle Material Animation"
-	bl_description = "Plays animated MH Wilds material effects (AnimEmit, WaveEmit, SecEmit) along with the timeline. When off, materials show their t = 0 state"
+	bl_label = "Play Material Effects"
+	bl_description = "Play or pause supported MH Wilds material effects with the scene timeline. Reset stops playback and returns effects to time zero. Material parameters are unchanged"
 	bl_idname = "re_mdf.toggle_material_animation"
+	action : bpy.props.EnumProperty(items = [("TOGGLE","Play/Pause","Play or pause the timeline"),("RESET","Reset","Stop and return to time zero")],default = "TOGGLE",options = {"SKIP_SAVE"})
+
+	@classmethod
+	def poll(cls,context):
+		return context.screen is not None
 
 	def execute(self, context):
 		state = getMHWildsMaterialAnimation()
-		if state == None:
-			self.report({"INFO"},"No animated MH Wilds materials are loaded")
+		if state is None:
+			self.report({"INFO"},"No timed material effects loaded. Enable AnimEmit/SecEmit and apply MDF first")
 			return {'CANCELLED'}
-		setMHWildsMaterialAnimation(not state)
+		if self.action == "RESET":
+			if context.screen.is_animation_playing:
+				bpy.ops.screen.animation_cancel(restore_frame = False)
+			setMHWildsMaterialAnimation(False)
+			context.scene.frame_set(context.scene.frame_start)
+		elif state and context.screen.is_animation_playing:
+			#Keep Animate on: pausing should freeze the current appearance, not snap to t=0.
+			bpy.ops.screen.animation_cancel(restore_frame = False)
+		else:
+			if not _bindMaterialAnimationClock(context.scene):
+				self.report({"WARNING"},"Material clock is incomplete. Apply MDF again")
+				return {'CANCELLED'}
+			setMHWildsMaterialAnimation(True)
+			if context.area is not None and context.area.type == "VIEW_3D":
+				if context.space_data.shading.type in {"SOLID","WIREFRAME"}:
+					context.space_data.shading.type = "MATERIAL"
+			if not context.screen.is_animation_playing:
+				bpy.ops.screen.animation_play()
 		for window in context.window_manager.windows:
 			for area in window.screen.areas:
-				if area.type == "VIEW_3D":
-					area.tag_redraw()
+				area.tag_redraw()
 		return {'FINISHED'}
 
 class WM_OT_OpenPresetFolder(Operator):

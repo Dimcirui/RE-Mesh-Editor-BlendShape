@@ -3,7 +3,9 @@ import os
 import bpy
 import re
 import traceback
+import json
 import glob
+from .re_mdf_live_preview import rememberMaterialPreview
 
 from mathutils import Vector
 from ..gen_functions import isLinux,resolveLinuxPath
@@ -243,8 +245,10 @@ baseUVTilingList = set([#Node types that use UV_Tiling property
 from ..gen_functions import raiseWarning,getBit,wildCardFileSearch
 from .file_re_mdf import readMDF,getMDFVersionToGameName
 from ..tex.blender_re_tex import loadTex
-from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup,addMHWildsFakeSphereNodes,addMHWildsColorLayerNodes,addMHWildsPanoramaNodes,addMHWildsDetailLayerNodes,addMHWildsFilmNodes,addMHWildsFixedAlphaNodes,mhWildsFilmActive,mhWildsTextureNeeded,addMHWildsBlendNormalNodes,addMHWildsEmissiveNodes
+from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup,addMHWildsFakeSphereNodes,addMHWildsColorLayerNodes,addMHWildsPanoramaNodes,addMHWildsDetailLayerNodes,addMHWildsFilmNodes,addMHWildsFixedAlphaNodes,mhWildsFilmActive,mhWildsTextureNeeded,addMHWildsBlendNormalNodes,addMHWildsEmissiveNodes,addMHWildsBaseUVNodes,addMHWildsAONodes,addMHWildsAlphaAdjustNodes,addMHWildsAlphaCoverageNodes
 from ..ddsconv.directx.texconv import Texconv, unload_texconv
+from .blender_mhwilds_multiblend import addMHWildsMultiBlendNodes,addMHWildsMultiBlendEmissionMask
+from .blender_mhwilds_skin import isMHWildsSkinEdit,addMHWildsSkinTintNodes,addMHWildsSkinSSSNodes
 DEBUG_MODE = False
 def debugprint(string):
 	if DEBUG_MODE:
@@ -434,6 +438,95 @@ def getTexPath(baseTexturePath,chunkPathList,mdfVersion,gameName = None):
 
 
 
+def textureImagesUsable(imageList):
+	#Reading size also forces lazy file-backed images to expose failed decoding.
+	return bool(imageList) and all(image != None and image.size[0] > 0 and image.size[1] > 0 and image.has_data for image in imageList)
+
+#Raw RGBA8 values measured from original .241106027 TEX resources, not guessed from slot names.
+#Exact logical paths only: arbitrary character textures containing "null" remain ordinary failures.
+MHWILDS_NULL_TEXTURES = {
+	'art/library/light/lightpostlibrary/lp_assets/texture/check/lp_nullgray':((129, 128, 129, 255),1),
+	'mastermaterial/textures/null_fur_up_msk3':((129, 255, 129, 255),1),
+	'mastermaterial/textures/null_nrro':((123, 128, 255, 127),1),
+	'mastermaterial/textures/nullblack_alpha_msk4':((0, 0, 0, 0),1),
+	'mastermaterial/textures/texturearray/nullwhite_array':((255, 255, 255, 255),2),
+	'systems/develop/ecotope/common/nullwhite_png':((255, 255, 255, 255),1),
+	'systems/rendering/nullatos':((255, 0, 255, 255),1),
+	'systems/rendering/nullblack':((0, 0, 0, 255),1),
+	'systems/rendering/nullgray':((129, 128, 129, 255),1),
+	'systems/rendering/nullnormal':((127, 127, 254, 0),1),
+	'systems/rendering/nullnormalroughness':((128, 128, 255, 128),1),
+	'systems/rendering/nullnormalroughnessocclusion':((128, 127, 255, 127),1),
+	'systems/rendering/nullwhite':((255, 255, 255, 255),1),
+}
+
+#Slot -> the null vanilla MDFs bind when the slot is unused: the most common null per slot across
+#all 11701 vanilla .mdf2.45 (>= 3 uses, >= half of that slot's null bindings, measured nulls only).
+#A missing slot texture previews as switched off instead of blanking the whole material.
+_MHWILDS_SLOT_NULLS = {
+	'systems/rendering/nullgray':('BaseAlphaMap','BaseDielectricMap','BaseDielectricMap_Age','BaseMap_FaceBlend',
+		'Detail_ALBD_A','Detail_ALBD_B','Detail_ALBD_G','Detail_ALBD_R','Detail_ALBD_TriPlanar','Detail_ALBD_TriPlanar_Top',
+		'Fixed_AlphaMap','FlowMap','GradientMap','GroundNoiseMap','HairOverMap','MultiBlend_ALBDMap','SkinMap','ToonFakeSphereMap'),
+	'systems/rendering/nullnormalroughnessocclusion':('Blend_NRRO_ch90_156','Detail_NRRH_A','Detail_NRRH_B','Detail_NRRH_G','Detail_NRRH_R',
+		'Detail_NRRH_TriPlanar','Detail_NRRH_TriPlanar_Top','NROMap_Age','NROMap_Detail','NROMap_FaceBlend','NormalRoughnessHeightMap','NormalRoughnessOcclusionMap'),
+	'systems/rendering/nullnormal':('BlendNormalMap','DetailNormalMap','Flowmap','FurFlowMap','MeganeRimMap','MultiBlend_NRMMap','NoiseMap','NormalMap',
+		'PaintMap_A','PaintMap_B','PaintMap_C','VAT_UV','VectorEmitMap','ch90_155_BlendNormalMap'),
+	'systems/rendering/nullwhite':('AlphaMap','BaseMap','ColorLayer_DetailMaskMap','DynamicTransparentHDR','GpuWind_MaskMap','GrassFall_MaskMap',
+		'Hair_Height_SpecMask_Shift_Map','MaskMap','MaskMap_2nd_Color','MetalMap','RoughnessMap','SecondaryEmissiveMap','Top_MaskMap','ch90_164_5000_MaskMap'),
+	'systems/rendering/nullblack':('AttributeMap','Blend_ALBA_ch90_156','DisplacementMap','FallMap','FoamMap','HeightMap','LightMap','LocalNormalMap','LocalPosMap',
+		'OIL01_Map','OIL02_Map','Oil_MaskMap','RGBA_Emit_MaskMap','RenderTargetTexture_2','Scene_HeightMap','SelfWind_MaskMap','Wave_Mask','YPos_MaskMap','ch90_100_5100_DispMap'),
+	'mastermaterial/textures/nullblack_alpha_msk4':('ColorLayer_MaskMap','DetailMaskMap','EmissiveMap','FakeSphere_ALBAMap','FxMap','VFX_Texture2D'),
+	'systems/rendering/nullatos':('AlphaTranslucentOcclusionSSSMap',),
+	'mastermaterial/textures/null_fur_up_msk3':('HairFlowMap',),
+}
+MHWILDS_SLOT_NULL_TEXTURES = {slot:null for null,slots in _MHWILDS_SLOT_NULLS.items() for slot in slots}
+#Strand pattern of shell fur: a flat null makes every shell opaque, so it is never substituted.
+#Its absence only skips the fur surface; the rest of the material still previews.
+MHWILDS_FUR_NOISE_MISSING_KEY = "re_mdf_preview_fur_noise_missing"
+
+def getSystemNullTextureImages(texturePath,textureType,outputPath,gameName):
+	if gameName != "MHWILDS":
+		return None
+	key = texturePath.replace("\\","/").replace("@","").lower()
+	key = re.sub(r"\.tex(?:\.\d+)?$","",key)
+	entry = MHWILDS_NULL_TEXTURES.get(key)
+	if entry == None:
+		return None
+	rgba,layerCount = entry
+	colorSpace = "sRGB" if textureType in albedoTypeSet or textureType == "MultiBlend_ALBDMap" or "alb" in outputPath.rsplit("_",1)[-1].lower() else "Non-Color"
+	images = []
+	for layer in range(layerCount):
+		cacheKey = f"MHWILDS:{key}:{colorSpace}:{layer}"
+		#Separate data/color consumers so addImageNode cannot change a shared image's interpretation.
+		image = next((image for image in bpy.data.images if image.get("re_mdf_null_fallback_key") == cacheKey and textureImagesUsable([image])),None)
+		if image == None:
+			image = bpy.data.images.new(name=f"RE Null {key.rsplit('/',1)[-1]} {layer}",width=1,height=1,alpha=True)
+			image.alpha_mode = "CHANNEL_PACKED"
+			image.colorspace_settings.name = colorSpace
+			image.generated_color = tuple(component/255.0 for component in rgba)
+			image["re_mdf_null_fallback_key"] = cacheKey
+			image.update()
+		images.append(image)
+	return images
+
+def buildMissingTextureMaterial(blenderMaterial,missingTextures):
+	#Keep the linked material identity and MDF bindings; only replace its preview.
+	nodeTree = blenderMaterial.node_tree
+	nodeTree.nodes.clear()
+	output = nodeTree.nodes.new('ShaderNodeOutputMaterial')
+	output.location = (300,0)
+	shader = nodeTree.nodes.new('ShaderNodeBsdfPrincipled')
+	shader.name = "RE Missing Texture Fallback"
+	shader.label = "Missing texture - neutral preview"
+	shader.inputs["Base Color"].default_value = (0.5,0.5,0.5,1.0)
+	shader.inputs["Metallic"].default_value = 0.0
+	shader.inputs["Roughness"].default_value = 0.5
+	shader.inputs["Alpha"].default_value = 1.0
+	nodeTree.links.new(shader.outputs["BSDF"],output.inputs["Surface"])
+	blenderMaterial.use_backface_culling = False
+	blenderMaterial["re_mdf_preview_missing_textures"] = json.dumps(missingTextures,ensure_ascii=False)
+	raiseWarning(f"Material {blenderMaterial.name}: using a neutral preview because {len(missingTextures)} required texture binding(s) could not be loaded. See re_mdf_preview_missing_textures on the material for paths.")
+
 def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBackfaceCulling,reloadCachedTextures,chunkPath = "",gameName = None,arrangeNodes = False):
 	TEXTURE_CACHE_DIR = bpy.context.preferences.addons[ADDON_NAME].preferences.textureCachePath
 	USE_DDS = bpy.context.preferences.addons[ADDON_NAME].preferences.useDDS == True and bpy.app.version >= (4,2,0)
@@ -467,9 +560,15 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 		if bpy.app.version < (4,2,0):
 			blenderMaterial.shadow_method = "HASHED"
 		blenderMaterial.node_tree.nodes.clear()
+		for diagnosticKey in ("re_mdf_preview_missing_textures","re_mdf_preview_null_fallbacks","re_mdf_skin_preview",MHWILDS_FUR_NOISE_MISSING_KEY):
+			if diagnosticKey in blenderMaterial:
+				del blenderMaterial[diagnosticKey]
 		mdfMaterial = mdfMaterialDict.get(materialName,None)
 		textureNodeInfoList = []
+		missingPreviewTextures = []
+		nullPreviewTextures = []
 		if mdfMaterial != None:
+			rememberMaterialPreview(blenderMaterial,mdfMaterial,mdfVersion,gameName,chunkPath,loadUnusedTextures,loadUnusedProps,useBackfaceCulling,arrangeNodes)
 			hasAlpha = mdfMaterial.flags.flagValues.BaseAlphaTestEnable or mdfMaterial.flags.flagValues.AlphaTestEnable or mdfMaterial.flags.flagValues.AlphaMaskUsed
 			if mdfMaterial.ver32Unkn0 == 1:
 				hasAlpha = True
@@ -491,11 +590,15 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						autoDetectedAlbedo = True
 						detectedAlbedo = True
 				isUsedTexture = textureType in usedTextureSet
+				if gameName == "MHWILDS" and textureType in ("FurFlowMap","FurNoiseMap"):
+					isUsedTexture = "Fur_Density" in mdfMaterial.getPropertyDict()
 				if gameName == "MHWILDS":#Some MH Wilds slots only matter when the material turns their feature on
 					featureNeeded = mhWildsTextureNeeded(textureType,mdfMaterial.getPropertyDict())
 					if featureNeeded != None:
 						isUsedTexture = featureNeeded
 				if loadUnusedTextures or isUsedTexture or autoDetectedAlbedo:
+					#Reset for every binding, including repeated unresolved paths.
+					imageList = [None]
 					baseTexturePath = texture.replace("@","").replace(".tex","").replace('/',os.sep)
 					outputPath = os.path.join(TEXTURE_CACHE_DIR,baseTexturePath+".png")
 					
@@ -506,6 +609,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 							try:
 								if texPath not in errorFileSet:
 									imageList = loadTex(texPath,outputPath,texConv,reloadCachedTextures,USE_DDS)
+									if not textureImagesUsable(imageList):
+										raise ValueError("Texture loading returned no usable image data (possibly an incomplete array)")
 									loadedImageDict[texPath] = imageList
 									#print(imageList)
 							except Exception as err:
@@ -521,6 +626,26 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 							raiseWarning("Could not find texture: " + texture + ", skipping...")
 							errorFileSet.add(texture)
 							imageList = [None]
+					if not textureImagesUsable(imageList):
+						nullImages = getSystemNullTextureImages(texture,textureType,outputPath,gameName)
+						if nullImages != None:
+							imageList = nullImages
+							nullPreviewTextures.append({"slot":textureType,"path":texture})
+					if not textureImagesUsable(imageList) and gameName == "MHWILDS" and textureType in MHWILDS_SLOT_NULL_TEXTURES:
+						#Specific textures are not bundled: an unresolved one previews as its slot's vanilla null.
+						slotNull = MHWILDS_SLOT_NULL_TEXTURES[textureType]
+						nullImages = getSystemNullTextureImages(slotNull,textureType,outputPath,gameName)
+						if nullImages != None:
+							imageList = nullImages
+							nullPreviewTextures.append({"slot":textureType,"path":texture,"fallback":slotNull})
+					if not textureImagesUsable(imageList):
+						imageList = [None]
+						#Loading unused/disabled slots for inspection must not blank a valid preview.
+						if gameName == "MHWILDS" and textureType == "FurNoiseMap":
+							if isUsedTexture:
+								blenderMaterial[MHWILDS_FUR_NOISE_MISSING_KEY] = texture
+						elif isUsedTexture or autoDetectedAlbedo:
+							missingPreviewTextures.append({"slot":textureType,"path":texture,"resolved_path":texPath})
 					#if os.path.exists(outputPath):
 						#Determine what node to create for this texture
 					
@@ -585,6 +710,11 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						textureNodeInfoList.append(("UNKN",textureType,imageList,outputPath))
 						#print(os.path.join(chunkPath,nativesRoot,baseTexturePath+".tex"+textureVersion))
 		
+			if nullPreviewTextures:
+				blenderMaterial["re_mdf_preview_null_fallbacks"] = json.dumps(nullPreviewTextures,ensure_ascii=False)
+			if missingPreviewTextures:
+				buildMissingTextureMaterial(blenderMaterial,missingPreviewTextures)
+				continue
 			nodeMaterialOutput = blenderMaterial.node_tree.nodes.new('ShaderNodeOutputMaterial')
 			nodeMaterialOutput.location = (800,0)
 			#if materialLoadLevel == "1":
@@ -603,6 +733,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 				currentPropPos = [-3000,2000]
 				currentXPos = -2000
 			matInfo = {
+				"mdfMaterial":mdfMaterial,
+				"chunkPathList":chunkPathList,
 				"mmtrName":os.path.split(mdfMaterial.mmtrPath.lower())[1],
 				"flags":mdfMaterial.flags.flagValues,
 				"textureNodeDict":{},
@@ -693,11 +825,16 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 				inErrorState = True
 			
 			try:#Detect nodes for game specific setups
+				if matInfo["gameName"] == "MHWILDS":
+					addMHWildsBaseUVNodes(nodeTree,matInfo)
+					addMHWildsAONodes(nodeTree,matInfo)
 				
 				
 				#WILDS
 				
-				if "SkinMap" in matInfo["textureNodeDict"] and matInfo["gameName"] == "MHWILDS":
+				if isMHWildsSkinEdit(matInfo):
+					addMHWildsSkinTintNodes(nodeTree,matInfo)
+				elif "SkinMap" in matInfo["textureNodeDict"] and matInfo["gameName"] == "MHWILDS":
 					skinMapNode = matInfo["textureNodeDict"]["SkinMap"]
 					
 					skinMappingGroupNode = getMHWildsSkinMappingNodeGroup(nodeTree)
@@ -1292,6 +1429,7 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						node = nodes["BaseAlphaMap"]
 						matInfo["alphaSocket"] = node.outputs["Alpha"]
 				if matInfo["gameName"] == "MHWILDS":
+					addMHWildsAlphaAdjustNodes(nodeTree,matInfo)
 					if "ColorParam" in nodes and matInfo["alphaSocket"] != None:
 						alphaMultNode = nodes.new("ShaderNodeMath")
 						alphaMultNode.location = nodes["ColorParam"].location + Vector((300,0))
@@ -1300,6 +1438,7 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						links.new(matInfo["alphaSocket"],alphaMultNode.inputs[0])
 						links.new(nodes["ColorParam"].outputs["Alpha"],alphaMultNode.inputs[1])
 						matInfo["alphaSocket"] = alphaMultNode.outputs["Value"]
+					addMHWildsMultiBlendNodes(nodeTree,matInfo)
 					if "lens" in matInfo["blenderMaterial"].name.lower():
 						matInfo["isAlphaBlend"] = True
 						
@@ -1473,6 +1612,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 								
 								matInfo["albedoNodeLayerGroup"].addMixLayer(mixColorNode.outputs["Color"],factorOutSocket = None,mixType = "MULTIPLY",mixFactor = 1.0)
 								matInfo["roughnessNodeLayerGroup"].addMixLayer(currentMaskNode.outputs["Alpha"],factorOutSocket = None,mixType = "MIX",mixFactor = 1.0)
+				from .blender_mhwilds_fur import add_fur_surface
+				add_fur_surface(nodeTree,matInfo)
 				#Finish process by linking to bsdf shader
 				
 				
@@ -1548,6 +1689,9 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						mappedNormalSocket = normalVectorRotateNode.outputs["Vector"]
 					elif normalNode != None:
 						mappedNormalSocket = normalNode.outputs["Normal"]
+					from .blender_mhwilds_fur import fur_world_normal
+					mappedNormalSocket=fur_world_normal(nodeTree,matInfo,mappedNormalSocket)
+					if mappedNormalSocket is not None:links.new(mappedNormalSocket,nodeBSDF.inputs["Normal"])
 					#Same order as the shaders: thin film, panorama, then the FakeSphere add
 					if "FxMap" in matInfo["textureNodeDict"]:
 						addMHWildsFilmNodes(nodeTree,matInfo,mappedNormalSocket)
@@ -1559,6 +1703,7 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						addMHWildsFakeSphereNodes(nodeTree,matInfo,mappedNormalSocket)
 					if "EmissiveMap" in matInfo["textureNodeDict"]:
 						addMHWildsEmissiveNodes(nodeTree,matInfo)
+					addMHWildsMultiBlendEmissionMask(nodeTree,matInfo)
 				if matInfo["aoNodeLayerGroup"].currentOutSocket != None and not matInfo["disableAO"]:
 					#This isn't the correct way to apply AO but EEVEE has no good ways of doing AO maps that doesn't have downsides (such as killing screenspace reflections and subsurface)
 					
@@ -1690,7 +1835,11 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						dissolveNode = addPropertyNode(matInfo["mPropDict"]["DissolveThreshold"], matInfo["currentPropPos"], nodeTree)
 						clippingThresholdOutSocket = dissolveNode.outputs["Value"]
 					
-					if not matInfo["isAlphaBlend"] and "reflectivetransparent" not in matInfo["mmtrName"] and "alphadissolve" not in matInfo["mmtrName"] and "decal_basealpha" not in matInfo["mmtrName"]:
+					wildsCoverageNode = addMHWildsAlphaCoverageNodes(nodeTree,matInfo)
+					if wildsCoverageNode != None:
+						alphaClippingNode = wildsCoverageNode
+						links.new(wildsCoverageNode.outputs["Value"],nodeBSDF.inputs["Alpha"])
+					elif not matInfo["isAlphaBlend"] and "reflectivetransparent" not in matInfo["mmtrName"] and "alphadissolve" not in matInfo["mmtrName"] and "decal_basealpha" not in matInfo["mmtrName"]:
 						
 						
 						if "hair" not in matInfo["mmtrName"] and "BaseAlphaMap" not in matInfo["textureNodeDict"]:
@@ -1730,7 +1879,9 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					else:
 						links.new(matInfo["sheenSocket"],nodeBSDF.inputs["Sheen Weight"])
 				
-				if matInfo["subsurfaceSocket"] != None:
+				if isMHWildsSkinEdit(matInfo):
+					addMHWildsSkinSSSNodes(nodeTree,matInfo,nodeBSDF)
+				elif matInfo["subsurfaceSocket"] != None:
 					if matInfo["gameName"] == "MHWILDS":
 						if "SSSProfile" in matInfo["mPropDict"] and matInfo["mPropDict"]["SSSProfile"].propValue[0] == 1.0:#Skin SSS profile
 							sssParamNode = None
@@ -1882,3 +2033,6 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 		showErrorMessageBox("An error occurred while importing materials. See the Window > Toggle System Console for details.")
 	else:
 		print("Finished loading materials.")
+	from ..sfur.blender_sfur_preview import request_update
+	for _material in meshMaterialDict.values():request_update(_material)
+	return not inErrorState

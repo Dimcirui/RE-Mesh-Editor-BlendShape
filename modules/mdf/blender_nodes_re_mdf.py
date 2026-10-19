@@ -328,6 +328,38 @@ def getBentNormalNodeGroup(nodeTree):
 	
 	return nodeGroupNode
 
+def getMHWildsNRRONodeGroup(nodeTree):
+	#Wilds SkinEdit PS: signed-square G/A, half-octahedral Z, then normalize.
+	#Emit ordinary RGB normal-map colors for the existing Normal Map node;
+	#this replaces the legacy decoder, it must not be stacked after that group.
+	groupName = "MHWildsNRRODecode_v1"
+	if groupName in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups[groupName]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name=groupName)
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor"),("Alpha","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Color","NodeSocketColor"),("Roughness","NodeSocketFloat"),("BlueChannel","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		channels = b.separate(i["Color"])
+		g = b.math("MULTIPLY_ADD",channels["Green"],2.0,-1.0)
+		a = b.math("MULTIPLY_ADD",i["Alpha"],2.0,-1.0)
+		g = b.math("MULTIPLY",g,b.math("ABSOLUTE",g))
+		a = b.math("MULTIPLY",a,b.math("ABSOLUTE",a))
+		x = b.math("MULTIPLY",b.math("ADD",g,a),0.5)
+		y = b.math("MULTIPLY",b.math("SUBTRACT",g,a),0.5)
+		z = b.math("SUBTRACT",b.math("SUBTRACT",1.0,b.math("ABSOLUTE",x)),b.math("ABSOLUTE",y))
+		x,y,z = b.normalize3(x,y,z)
+		color = b.combineColor(b.math("MULTIPLY_ADD",x,0.5,0.5),b.math("MULTIPLY_ADD",y,0.5,0.5),b.math("MULTIPLY_ADD",z,0.5,0.5))
+		outNode = b.nodes.new('NodeGroupOutput')
+		outNode.location = (b.x + 200,0)
+		b.links.new(color,outNode.inputs["Color"])
+		b.links.new(channels["Red"],outNode.inputs["Roughness"])
+		b.links.new(channels["Blue"],outNode.inputs["BlueChannel"])
+	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
+	nodeGroupNode.node_tree = nodeGroup
+	return nodeGroupNode
+
 def getDualUVMappingNodeGroup(nodeTree):
 	if "DualUVMappingNodeGroupV2" in bpy.data.node_groups:
 		nodeGroup = bpy.data.node_groups["DualUVMappingNodeGroupV2"]
@@ -982,11 +1014,13 @@ missingTexTypeDict = {
 	"ATOC":(1.0,0.0,1.0,1.0),
 	"OCMA":(1.0,1.0,1.0,1.0),
 	}
+MHWILDS_MULTIBLEND_LIVE_PROPS = {"Blend_num","use_overlay","sRGB_Overlay","Use_MultiBlend_NRRO","Blend_Contrast","Blend_Alpha_Threshold","Use_EmitMask"} | {"Blend_"+channel for channel in "ABCDEFGH"}
+
 MAX_ARRAY_IMPORT_SIZE = 16#Blender can't handle much more than 16 mix nodes into a color node, so it gets treated as a single image node if it exceeds 16
 def addImageNode(nodeTree,textureType,imageList,texturePath,currentPos):
 	#print(f"Loading {texturePath}")
 	#print(len(imageList))
-	colorSpace = "sRGB" if textureType in albedoTypeSet or "alb" in texturePath.rsplit("_",1)[-1].lower() else "Non-Color"
+	colorSpace = "sRGB" if textureType in albedoTypeSet or textureType == "MultiBlend_ALBDMap" or "alb" in texturePath.rsplit("_",1)[-1].lower() else "Non-Color"
 	
 	if len(imageList) == 1 or len(imageList) > MAX_ARRAY_IMPORT_SIZE:
 		imageNode = nodeTree.nodes.new('ShaderNodeTexImage')
@@ -1055,7 +1089,10 @@ def newALBDNode (nodeTree,textureType,matInfo):
 	
 	#matInfo["albedoNodeLayerGroup"].addMixLayer(imageNode.outputs["Color"],factorOutSocket = None,mixType = "MIX",mixFactor = 0.0)
 	matInfo["albedoNodeLayerGroup"].addMixLayer(imageNode.outputs["Color"])
-	matInfo["metallicNodeLayerGroup"].addMixLayer(imageNode.outputs["Alpha"])
+	from .blender_mhwilds_skin import isMHWildsSkinEdit
+	#SkinEdit uses BaseDielectric.A only for palette tint; its static base is nonmetallic.
+	if not isMHWildsSkinEdit(matInfo):
+		matInfo["metallicNodeLayerGroup"].addMixLayer(imageNode.outputs["Alpha"])
 	matInfo["isDielectric"] = True
 	
 	return imageNode
@@ -1076,6 +1113,8 @@ def newALBANode (nodeTree,textureType,matInfo):
 	matInfo["albedoNodeLayerGroup"].addMixLayer(imageNode.outputs["Color"],factorOutSocket = None,mixType = "MIX",mixFactor = 0.5)
 
 	matInfo["alphaSocket"] = imageNode.outputs["Alpha"]
+	if matInfo["gameName"] == "MHWILDS":
+		matInfo["mhWildsRawAlphaSource"] = imageNode.outputs["Alpha"]
 	return imageNode
 def newALBNode (nodeTree,textureType,matInfo):
 	imageNode = nodeTree.nodes[textureType]
@@ -1191,11 +1230,10 @@ def newNRRTNode (nodeTree,textureType,matInfo):
 	imageNode = nodeTree.nodes[textureType]
 	currentPos = [imageNode.location[0]+300,imageNode.location[1]]
 	
-	occlusionUV2Node = None
-	if "UseAOSecondaryUV" in matInfo["mPropDict"] and matInfo["gameName"] == "MHWILDS":
-		occlusionUV2Node = addPropertyNode(matInfo["mPropDict"]["UseAOSecondaryUV"], matInfo["currentPropPos"], nodeTree)
-	
-	nodeGroupNode = getBentNormalNodeGroup(nodeTree)
+	if matInfo["gameName"] == "MHWILDS" and textureType == "NormalRoughnessOcclusionMap":
+		nodeGroupNode = getMHWildsNRRONodeGroup(nodeTree)
+	else:
+		nodeGroupNode = getBentNormalNodeGroup(nodeTree)
 	nodeGroupNode.location = currentPos
 	nodeTree.links.new(imageNode.outputs["Color"],nodeGroupNode.inputs["Color"])
 	nodeTree.links.new(imageNode.outputs["Alpha"],nodeGroupNode.inputs["Alpha"])
@@ -1207,38 +1245,8 @@ def newNRRTNode (nodeTree,textureType,matInfo):
 		matInfo["cavityNodeLayerGroup"].addMixLayer(nodeGroupNode.outputs["BlueChannel"])
 		
 	elif textureType == "NormalRoughnessOcclusionMap":
-		
-		if occlusionUV2Node != None:
-			UVMap1Node = None
-			UVMap2Node = None
-			if "UVMap1Node" in nodeTree.nodes:
-				UVMap1Node = nodeTree.nodes["UVMap1Node"]
-			if "UVMap2Node" in nodeTree.nodes:
-				UVMap2Node = nodeTree.nodes["UVMap2Node"]
-			if UVMap1Node != None and UVMap2Node != None:
-				
-				
-				uvMappingGroupNode = getDualUVMappingNodeGroup(nodeTree)
-				uvMappingGroupNode.location = occlusionUV2Node.location + Vector((300,0))
-				nodeTree.links.new(UVMap1Node.outputs["UV"],uvMappingGroupNode.inputs["UV1"])
-				nodeTree.links.new(UVMap2Node.outputs["UV"],uvMappingGroupNode.inputs["UV2"])
-				nodeTree.links.new(occlusionUV2Node.outputs["Value"],uvMappingGroupNode.inputs["UseSecondaryUV"])
-				nodeTree.links.new(uvMappingGroupNode.outputs["Vector"],imageNode.inputs["Vector"])
-				
-				
-				imageNodeUV2 = nodeTree.nodes.new('ShaderNodeTexImage')
-				imageNodeUV2.name = "UV2_"+textureType
-				imageNodeUV2.label = "UV2_"+textureType
-				imageNodeUV2.location = currentPos
-				imageNodeUV2.image = imageNode.image
-				nodeTree.links.new(uvMappingGroupNode.outputs["Vector"],imageNodeUV2.inputs["Vector"])
-				currentPos[0] += 300
-				
-				separateNodeUV2 = nodeTree.nodes.new('ShaderNodeSeparateColor')
-				separateNodeUV2.location = currentPos
-				nodeTree.links.new(imageNodeUV2.outputs["Color"],separateNodeUV2.inputs["Color"])
-				currentPos[0] += 300
-				matInfo["aoNodeLayerGroup"].addMixLayer(separateNodeUV2.outputs["Blue"])
+		if matInfo["gameName"] == "MHWILDS":
+			addMHWildsAOTextureNodes(nodeTree,matInfo,textureType)
 		else:
 			matInfo["aoNodeLayerGroup"].addMixLayer(nodeGroupNode.outputs["BlueChannel"])
 	elif textureType == "NormalRoughnessAlphaMap":
@@ -1289,11 +1297,15 @@ def linkMHWildsProp(nodeTree,matInfo,propName,socket,default = None,output = Non
 	return propNode
 
 #MDF properties the MH Wilds preview feeds through property nodes, editing them in the MDF material panel updates the nodes live
-MHWILDS_LIVE_PROPS = set(["useOPM","ModulateColor","ColorLayer_DetailMask_Tile","ColorLayer_DetailMask_Blend","Film_Thickness","Film_IOR","Film_Blend",
+MHWILDS_LIVE_PROPS = set(["ChangeUV","UseAOSecondaryUV","OcclusionParam","AlphaAdjust","AlphaTest_Ref","UseTempDither","useOPM","ModulateColor","ColorLayer_DetailMask_Tile","ColorLayer_DetailMask_Blend","Film_Thickness","Film_IOR","Film_Blend",
 	"UseBaseColorFilm","FullFIlm","NormalBlendParam","VectorEmit_power","ParallaxEmit_Height","ParallaxEmit_Blend","MoveEmit","MoveEmit_Width","Use_WaveMove",
 	"AnimEmit_Min","AnimEmit_Speed","UseWaveEmit","AnimEmitWave","SecEmit_Anim_Min","SecEmit_Anim_Speed","SecEmit_Anim_UseWaveEmit","SecEmit_Anim_Wave",
 	"SecondaryEmitColor","AddColorUV","ToonEmissiveIntensity","FakeHighLight_Position","FakeHighLight_ScaleOffset","FakeHighLight_Color",
 	"FakeRefraction_Blend","Refraction_Index","UseOverRay_ColorLayer","ColorLayer_Mask_Width","ColorLayer_Mask_Fade","ColorLayer_Roughness"])
+MHWILDS_LIVE_PROPS.update(MHWILDS_MULTIBLEND_LIVE_PROPS)
+from .blender_mhwilds_fur import FUR_PROPS
+MHWILDS_LIVE_PROPS.update(FUR_PROPS)
+MHWILDS_LIVE_PROPS.update({"AddColorUV","SSSParam","SSSProfile"})
 for _channel in ("R","G","B","A"):
 	MHWILDS_LIVE_PROPS.update([f"ColorLayer_{_channel}",f"Use_{_channel}",f"UseOpacity_{_channel}",f"PrevHeight_{_channel}",f"UseThrough_Normal_{_channel}",
 		f"DetailAlphaRef_{_channel}",f"DetailAlphaWidth_{_channel}",f"Detail_Roughness_{_channel}",f"Detail_Metal_{_channel}",f"DetailNormal_{_channel}",
@@ -1429,6 +1441,182 @@ def newGroupSockets(nodeGroup,socketList,inOut):
 			(nodeGroup.inputs if inOut == "INPUT" else nodeGroup.outputs).new(socketType,name)
 		else:
 			nodeGroup.interface.new_socket(name=name,description="",in_out = inOut, socket_type=socketType)
+
+def getMHWildsBaseAOUVNodeGroup(nodeTree):
+	groupName = "MHWildsBaseAOUV_v1"
+	if groupName in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups[groupName]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name=groupName)
+		newGroupSockets(nodeGroup,[("Primary UV","NodeSocketVector"),("Secondary UV","NodeSocketVector"),("ChangeUV","NodeSocketFloat"),("UseAOSecondaryUV","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Base UV","NodeSocketVector"),("AO UV","NodeSocketVector")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		primary,secondary = b.separateXYZ(i["Primary UV"]),b.separateXYZ(i["Secondary UV"])
+		change,aoSecondary = b.greater0(i["ChangeUV"]),b.greater0(i["UseAOSecondaryUV"])
+		base = [b.select(change,secondary[c],primary[c]) for c in ("X","Y","Z")]
+		ao = [b.select(aoSecondary,secondary[c],base[index]) for index,c in enumerate(("X","Y","Z"))]
+		out = b.nodes.new('NodeGroupOutput')
+		b.links.new(b.combineXYZ(*base),out.inputs["Base UV"])
+		b.links.new(b.combineXYZ(*ao),out.inputs["AO UV"])
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = nodeGroup
+	return node
+
+def getMHWildsBaseAOUVNode(nodeTree,matInfo):
+	if "MHWildsBaseAOUV" in nodeTree.nodes:
+		return nodeTree.nodes["MHWildsBaseAOUV"]
+	node = getMHWildsBaseAOUVNodeGroup(nodeTree)
+	node.name = "MHWildsBaseAOUV"
+	node.location = (-1300,1000)
+	primary = nodeTree.nodes.get("UVMap1Node")
+	secondary = nodeTree.nodes.get("UVMap2Node") or primary
+	if primary != None:
+		nodeTree.links.new(primary.outputs["UV"],node.inputs["Primary UV"])
+	if secondary != None:
+		nodeTree.links.new(secondary.outputs["UV"],node.inputs["Secondary UV"])
+	for name in ("ChangeUV","UseAOSecondaryUV"):
+		linkMHWildsProp(nodeTree,matInfo,name,node.inputs[name],0.0)
+	return node
+
+def addMHWildsBaseUVNodes(nodeTree,matInfo):
+	if matInfo["gameName"] != "MHWILDS":
+		return
+	uv = getMHWildsBaseAOUVNode(nodeTree,matInfo)
+	#These standard slots share ChangeUV in the traced Wilds shaders.
+	#Detail, SkinMap, BlendNormal, eye height and effect UVs have separate policies.
+	for name in ("BaseDielectricMap","BaseAlphaMap","NormalRoughnessOcclusionMap","AlphaTranslucentOcclusionSSSMap"):
+		image = matInfo["textureNodeDict"].get(name)
+		if image != None:
+			nodeTree.links.new(uv.outputs["Base UV"],image.inputs["Vector"])
+
+def addMHWildsAOTextureNodes(nodeTree,matInfo,textureType):
+	#Only AO gets the alternate UV. Never rewire the normal/roughness/alpha sample.
+	source = matInfo.get("textureNodeDict",{}).get(textureType) or nodeTree.nodes[textureType]
+	uv = getMHWildsBaseAOUVNode(nodeTree,matInfo)
+	nodeTree.links.new(uv.outputs["Base UV"],source.inputs["Vector"])
+	def sample(image,name):
+		copy = nodeTree.nodes.new("ShaderNodeTexImage")
+		copy.name = name
+		copy.image = image.image
+		for attr in ("extension","interpolation","projection","projection_blend"):
+			setattr(copy,attr,getattr(image,attr))
+		copy.location = image.location + Vector((0,-350))
+		nodeTree.links.new(uv.outputs["AO UV"],copy.inputs["Vector"])
+		return copy
+	if source.bl_idname == "ShaderNodeTexImage":
+		aoImage = sample(source,"AO_"+textureType)
+		color = aoImage.outputs["Color"]
+	else:
+		#Array sources are pass-through groups; duplicate only their image samples.
+		prefix = "ARRAY_"+textureType+"_"
+		images = sorted((n for n in nodeTree.nodes if n.bl_idname == "ShaderNodeTexImage" and n.name.startswith(prefix) and n.name[len(prefix):].isdigit()),key = lambda n:int(n.name[len(prefix):]))
+		if not images:
+			return
+		array = dynamicArrayTextureSelectorNodeGroup(nodeTree)
+		for image in images:
+			index = int(image.name[len(prefix):])
+			copy = sample(image,"AO_"+image.name)
+			array.addMixLayer(copy.outputs["Color"],copy.outputs["Alpha"],index)
+		selector = nodeTree.nodes.get(prefix+"SELECTOR")
+		if selector != None:
+			nodeTree.links.new(selector.outputs["Value"],array.selectorNode.inputs[0])
+		color = array.currentOutSocket
+	separate = nodeTree.nodes.new("ShaderNodeSeparateColor")
+	nodeTree.links.new(color,separate.inputs["Color"])
+	matInfo.setdefault("mhWildsAOSockets",[]).append(separate.outputs["Blue"])
+
+def addMHWildsAONodes(nodeTree,matInfo):
+	sources = matInfo.get("mhWildsAOSockets",[])
+	if matInfo["gameName"] != "MHWILDS" or not sources:
+		return
+	ao = sources[0]
+	for source in sources[1:]:
+		minimum = nodeTree.nodes.new("ShaderNodeMath")
+		minimum.operation = "MINIMUM"
+		nodeTree.links.new(ao,minimum.inputs[0])
+		nodeTree.links.new(source,minimum.inputs[1])
+		ao = minimum.outputs["Value"]
+	#Wilds: 1 - OcclusionParam * (1 - min(NRRO.B, ATOS.B)). No extra clamp.
+	invert = nodeTree.nodes.new("ShaderNodeMath")
+	invert.operation = "SUBTRACT"
+	invert.inputs[0].default_value = 1.0
+	nodeTree.links.new(ao,invert.inputs[1])
+	strength = nodeTree.nodes.new("ShaderNodeMath")
+	strength.operation = "MULTIPLY"
+	nodeTree.links.new(invert.outputs["Value"],strength.inputs[0])
+	linkMHWildsProp(nodeTree,matInfo,"OcclusionParam",strength.inputs[1],1.0)
+	result = nodeTree.nodes.new("ShaderNodeMath")
+	result.name = "MHWildsOcclusion"
+	result.operation = "SUBTRACT"
+	result.inputs[0].default_value = 1.0
+	nodeTree.links.new(strength.outputs["Value"],result.inputs[1])
+	matInfo["aoNodeLayerGroup"].addMixLayer(result.outputs["Value"],mixType = "MULTIPLY",mixFactor = 1.0)
+
+def getMHWildsAlphaAdjustNodeGroup(nodeTree):
+	groupName = "MHWildsAlphaAdjust_v1"
+	if groupName in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups[groupName]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name=groupName)
+		newGroupSockets(nodeGroup,[("Alpha","NodeSocketFloat"),("AlphaAdjust","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Value","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		low = b.math("MULTIPLY_ADD",i["Alpha"],2.0,-1.0,clamp = True)
+		high = b.math("MULTIPLY",i["Alpha"],2.0,clamp = True)
+		out = b.nodes.new('NodeGroupOutput')
+		b.links.new(b.lerp(low,high,i["AlphaAdjust"]),out.inputs["Value"])
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = nodeGroup
+	return node
+
+def addMHWildsAlphaAdjustNodes(nodeTree,matInfo):
+	if matInfo["gameName"] != "MHWILDS" or "AlphaAdjust" not in matInfo["mPropDict"]:
+		return
+	alpha = matInfo.get("mhWildsRawAlphaSource")
+	if alpha == None or matInfo["alphaSocket"] != alpha:
+		return
+	node = getMHWildsAlphaAdjustNodeGroup(nodeTree)
+	node.name = "MHWildsAlphaAdjust"
+	nodeTree.links.new(alpha,node.inputs["Alpha"])
+	linkMHWildsProp(nodeTree,matInfo,"AlphaAdjust",node.inputs["AlphaAdjust"],0.0)
+	matInfo["alphaSocket"] = node.outputs["Value"]
+
+def getMHWildsAlphaCoverageNodeGroup(nodeTree):
+	groupName = "MHWildsAlphaCoverage_v1"
+	if groupName in bpy.data.node_groups:
+		nodeGroup = bpy.data.node_groups[groupName]
+	else:
+		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name=groupName)
+		newGroupSockets(nodeGroup,[("Alpha","NodeSocketFloat"),("AlphaTest_Ref","NodeSocketFloat"),("UseTempDither","NodeSocketFloat")],"INPUT")
+		newGroupSockets(nodeGroup,[("Value","NodeSocketFloat")],"OUTPUT")
+		b = ShaderGroupBuilder(nodeGroup)
+		i = b.nodes.new('NodeGroupInput').outputs
+		#The shader rejects alpha < ref, so equality must remain visible.
+		cutout = b.math("SUBTRACT",1.0,b.math("LESS_THAN",i["Alpha"],i["AlphaTest_Ref"]))
+		#Continuous coverage is a preview approximation of REE noise/TAA, not its history.
+		coverage = b.math("MULTIPLY",i["Alpha"],1.0,clamp = True)
+		out = b.nodes.new('NodeGroupOutput')
+		b.links.new(b.select(b.greater0(i["UseTempDither"]),coverage,cutout),out.inputs["Value"])
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = nodeGroup
+	return node
+
+def addMHWildsAlphaCoverageNodes(nodeTree,matInfo):
+	if matInfo["gameName"] != "MHWILDS" or "AlphaTest_Ref" not in matInfo["mPropDict"] or matInfo["isAlphaBlend"]:
+		return None
+	#Preserve existing continuous/forward profiles; their forward shaders need not test alpha.
+	if any(name in matInfo["mmtrName"] for name in ("reflectivetransparent","roughtransparent","alphadissolve","decal_basealpha","basealpha_matcap_fx")):
+		return None
+	node = getMHWildsAlphaCoverageNodeGroup(nodeTree)
+	node.name = "MHWildsAlphaCoverage"
+	node.label = "Alpha test / temporal coverage approximation"
+	nodeTree.links.new(matInfo["alphaSocket"],node.inputs["Alpha"])
+	for name in ("AlphaTest_Ref","UseTempDither"):
+		linkMHWildsProp(nodeTree,matInfo,name,node.inputs[name],0.0)
+	return node
+
 
 def getMHWildsDetailUVNodeGroup(nodeTree):
 	#Detail layer UV, from Base_Equip / VFXwe PS #63: uv = (UseFlip ? uv0.yx : uv0) * DetailTile, then * UV_ScaleOffset.xy + .zw when UseUV_ScaleOffset
@@ -2111,9 +2299,20 @@ def getMHWildsBlendNormalNodeGroup(nodeTree):
 def mhWildsPropValue(props,name,default = 0.0,index = 0):
 	return float(props[name].propValue[index]) if name in props else default
 
+def mhWildsMultiBlendIndices(props):
+	count = mhWildsPropValue(props,"Blend_num")
+	indices = []
+	for index in range(32):
+		name = "Blend_"+chr(65+index//4)
+		if index < count and name in props and len(props[name].propValue) > index%4 and props[name].propValue[index%4] != 0.0:
+			indices.append(index)
+	return indices
+
 def mhWildsTextureNeeded(textureType,props):
 	#Textures that only matter when the material turns the matching feature on, None means no special rule
 	value = lambda name,default = 0.0: mhWildsPropValue(props,name,default)
+	if textureType in ("MultiBlend_ALBDMap","MultiBlend_NRMMap"):
+		return bool(mhWildsMultiBlendIndices(props))
 	fakeRefraction = value("FakeRefraction_Blend") != 0.0
 	if textureType == "PanoramaMap":
 		return fakeRefraction
@@ -2566,6 +2765,19 @@ def newEMINode (nodeTree,textureType,matInfo):
 		reduceEMIMultNode.operation = "MULTIPLY"
 		nodeTree.links.new(emiIntensityNode.outputs["Value"],reduceEMIMultNode.inputs[0])
 		reduceEMIMultNode.inputs[1].default_value = EMISSION_MULTIPLIER
+		if matInfo["gameName"] == "MHWILDS" and "Emissive_Intensity" in matInfo["mPropDict"] and "Emissive_Power" in matInfo["mPropDict"]:
+			#Wilds DXIL unary opcode 21 is exp2: Intensity * 2^Power, before exposure compensation.
+			powerProp = addPropertyNode(matInfo["mPropDict"]["Emissive_Power"], matInfo["currentPropPos"], nodeTree)
+			powerNode = nodeTree.nodes.new("ShaderNodeMath")
+			powerNode.name = "MHWilds Emissive Power"
+			powerNode.operation = "POWER"
+			powerNode.inputs[0].default_value = 2.0
+			nodeTree.links.new(powerProp.outputs["Value"],powerNode.inputs[1])
+			scaleNode = nodeTree.nodes.new("ShaderNodeMath")
+			scaleNode.operation = "MULTIPLY"
+			scaleNode.inputs[1].default_value = EMISSION_MULTIPLIER
+			nodeTree.links.new(powerNode.outputs["Value"],scaleNode.inputs[0])
+			nodeTree.links.new(scaleNode.outputs["Value"],reduceEMIMultNode.inputs[1])
 		
 		currentPos[0]+=300
 		nodeTree.links.new(imageNode.outputs["Color"],bwNode.inputs[0])
@@ -2878,7 +3090,9 @@ def newATOSNode (nodeTree,textureType,matInfo):
 			if not isMTOS and not isMaskAlpha:
 				matInfo["alphaSocket"] = separateNode.outputs["Red"]
 		
-		if occlusionUV2Node != None or useLegacyHairUV2Occlusion:
+		if matInfo["gameName"] == "MHWILDS" and textureType == "AlphaTranslucentOcclusionSSSMap":
+			addMHWildsAOTextureNodes(nodeTree,matInfo,textureType)
+		elif occlusionUV2Node != None or useLegacyHairUV2Occlusion:
 			mixUVOCCNode = nodeTree.nodes.new('ShaderNodeMixRGB')
 			mixUVOCCNode.location = currentPos
 			nodeTree.links.new(separateNode.outputs["Blue"],mixUVOCCNode.inputs["Color1"])
@@ -2909,7 +3123,9 @@ def newATOSNode (nodeTree,textureType,matInfo):
 		if not isMTOS and not isMaskAlpha and not "StitchMap" in matInfo["textureNodeDict"]:
 			matInfo["alphaSocket"] = separateNode.outputs["Red"]
 		matInfo["translucentSocket"] = separateNode.outputs["Green"]
-		if matInfo["gameName"] != "SF6" and not useLegacyHairUV2Occlusion:#SF6 uses occlusion channel for something else
+		if matInfo["gameName"] == "MHWILDS" and textureType == "AlphaTranslucentOcclusionSSSMap":
+			addMHWildsAOTextureNodes(nodeTree,matInfo,textureType)
+		elif matInfo["gameName"] != "SF6" and not useLegacyHairUV2Occlusion:#SF6 uses occlusion channel for something else
 			matInfo["aoNodeLayerGroup"].addMixLayer(separateNode.outputs["Blue"])
 		
 		if textureType == "AlphaTranslucentOcclusionCavityMap":
@@ -2922,6 +3138,8 @@ def newATOSNode (nodeTree,textureType,matInfo):
 		else:
 			matInfo["subsurfaceSocket"] = imageNode.outputs["Alpha"]
 	
+	if matInfo["gameName"] == "MHWILDS" and textureType == "AlphaTranslucentOcclusionSSSMap" and matInfo["alphaSocket"] == separateNode.outputs["Red"]:
+		matInfo["mhWildsRawAlphaSource"] = separateNode.outputs["Red"]
 	return imageNode
 
 def newOCTDNode (nodeTree,textureType,matInfo):

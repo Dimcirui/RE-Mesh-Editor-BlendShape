@@ -11,7 +11,13 @@ from bpy.props import (StringProperty,
 					   )
 
 
+def update_preview(self, context):
+	from .blender_sfur_preview import request_update
+	request_update(self.id_data)
+
+
 def update_materialName(self, context):
+	update_preview(self, context)
 	parentObj = self.id_data
 	try:
 		#print(parentObj)
@@ -35,6 +41,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		name = "Grooming Texture Path",
 		description = "Texture used to determine the direction that the fur will point.\nTip: If you don't have a grooming texture, you can use a standard normal map for a somewhat decent result.",
 		default = "systems/rendering/NullNormal.tex",
+		update=update_preview,
 		)
 	shellCount: IntProperty(
 		name = "Shell Count",
@@ -42,6 +49,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		default = 12,
 		soft_min = 0,
 		soft_max = 100,
+		update=update_preview,
 		)
 
 	shellThinType: EnumProperty(
@@ -61,6 +69,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 				("1", "UV Secondary", ""),
 			  ],
 		default = "0",
+		update=update_preview,
 		)
 
 	shellHeight: FloatProperty(
@@ -69,6 +78,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		default = 0.03,
 		soft_min = 0.0,
 		soft_max = 0.3,
+		update=update_preview,
 		)
 
 	bendRate: FloatProperty(
@@ -77,6 +87,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		default = 1.0,
 		soft_min = 0.0,
 		soft_max = 1.0,
+		update=update_preview,
 		)
 
 	bendRootRate: FloatProperty(
@@ -85,6 +96,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		default = 0.0,
 		soft_min = 0.0,
 		soft_max = 1.0,
+		update=update_preview,
 		)
 
 	normalTransformRate: FloatProperty(
@@ -93,6 +105,7 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		default = 0.0,
 		soft_min = 0.0,
 		soft_max = 1.0,
+		update=update_preview,
 		)
 	
 	stiffness: FloatProperty(
@@ -146,11 +159,13 @@ class SFurEntryPropertyGroup(bpy.types.PropertyGroup):
 		name = "Is Force Two Side",
 		description = "",
 		default = False,
+		update=update_preview,
 		)
 	isForceAlphaTest: BoolProperty(
 		name = "Is Force Alpha Test",
 		description = "",
 		default = False,
+		update=update_preview,
 		)
 	unknownFlag: IntProperty(
 		name = "Unknown Flags",
