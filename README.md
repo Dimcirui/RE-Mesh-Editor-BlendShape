@@ -31,10 +31,10 @@ feature list, documentation and credits.
 | Game | Import | Export | Notes |
 |---|---|---|---|
 | Monster Hunter Wilds | yes | yes |  |
-| Monster Hunter Rise: Sunbreak | yes | yes | Not yet tested in game. |
+| Monster Hunter Rise: Sunbreak | yes | yes |  |
 | Resident Evil 4 Remake | yes | yes |  |
 | Onimusha: Way of the Sword | yes | yes |  |
-| Resident Evil Requiem (RE9) | yes | yes | Not yet tested in game. |
+| Resident Evil Requiem (RE9) | yes | yes |  |
 
 - Shape key names longer than Blender's 63-byte limit keep their full game name through import
   and export (game constraints bind channels by name).
