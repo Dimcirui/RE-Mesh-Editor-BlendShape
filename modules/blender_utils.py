@@ -173,48 +173,39 @@ def nodes_iterate(ntree, arrange=True):
 	if nodeoutput is None:
 		#print ("nodeoutput is None")
 		return None
-	a = []
-	a.append([])
-	for i in nodeoutput:
-		a[0].append(i)
 
+	#socket.links scans every link in the tree, so index them once.
+	#Same order as NodeSocket.links: tree order, multi-input sockets by sort id descending.
+	inputLinks = {}
+	for link in ntree.links:
+		inputLinks.setdefault(link.to_socket.as_pointer(),[]).append(link)
+	for links in inputLinks.values():
+		links.sort(key = lambda link: link.multi_input_sort_id,reverse = True)
 
+	#Expand each level without duplicates, first wins. Expanding every path instead
+	#grows with the number of paths, which explodes on shared nodes (UV, layer chains).
+	a = [list(OrderedDict(zip(nodeoutput, repeat(None))))]
 	level = 0
 
-	while a[level]:
-		a.append([])
-
+	while a[level] and level <= len(ntree.nodes):#Depth bound guards against looping invalid links
+		nextLevel = OrderedDict()
 		for node in a[level]:
-			inputlist = [i for i in node.inputs if i.is_linked]
-
-			if inputlist:
-
-				for input in inputlist:
-					for nlinks in input.links:
-						node1 = nlinks.from_node
-						a[level + 1].append(node1)
-
-			else:
-				pass
-
+			for input in node.inputs:
+				for nlinks in inputLinks.get(input.as_pointer(),()):
+					nextLevel[nlinks.from_node] = None
+		a.append(list(nextLevel))
 		level += 1
 
 	del a[level]
 	level -= 1
 
-	#remove duplicate nodes at the same level, first wins
-	for x, nodes in enumerate(a):
-		a[x] = list(OrderedDict(zip(a[x], repeat(None))))
-
 	#remove duplicate nodes in all levels, last wins
-	top = level
-	for row1 in range(top, 1, -1):
-		for col1 in a[row1]:
-			for row2 in range(row1-1, 0, -1):
-				for col2 in a[row2]:
-					if col1 == col2:
-						a[row2].remove(col2)
-						break
+	deepest = {}
+	for row in range(1, level + 1):
+		for node in a[row]:
+			deepest[node] = row
+	for row in range(1, level + 1):
+		a[row] = [node for node in a[row] if deepest[node] == row]
 
 	"""
 	for x, i in enumerate(a):
@@ -327,8 +318,13 @@ def arrangeNodeTree(ntree,margin_x = 100,margin_y = 20,centerNodes = True):
 		if i.type == 'GROUP':
 			n_groups.append(i)
 
+	#Group trees are shared data: arrange each one once, not once per instance.
+	arrangedGroups = set()
 	while n_groups:
 		j = n_groups.pop(0)
+		if j.node_tree is None or j.node_tree in arrangedGroups:
+			continue
+		arrangedGroups.add(j.node_tree)
 		nodes_iterate(j.node_tree)
 		for i in j.node_tree.nodes:
 			if i.type == 'GROUP':
