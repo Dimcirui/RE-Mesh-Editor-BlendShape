@@ -208,10 +208,35 @@ def setStaticNormals(meshData, keyName, static):
 	return True
 
 
+def _mute_shape_key_drivers(obj):
+	"""Mute the drivers on obj's shape key values; returns the fcurves to unmute.
+
+	Depsgraph evaluation replaces a driven key's value with the driver result, so a
+	key set to 1.0 for extraction would be evaluated at the driver output instead.
+	"""
+	shapeKeys = obj.data.shape_keys if obj.data is not None else None
+	animData = shapeKeys.animation_data if shapeKeys is not None else None
+	if animData is None:
+		return []
+	muted = [
+		fcurve for fcurve in animData.drivers
+		if fcurve.data_path.startswith("key_blocks[") and not fcurve.mute
+	]
+	for fcurve in muted:
+		fcurve.mute = True
+	return muted
+
+
+def _unmute_drivers(muted):
+	for fcurve in muted:
+		fcurve.mute = False
+
+
 def _evaluated_mesh_with_key_values(obj, values):
 	"""Evaluated copy of obj with every non-basis key set by values (default 0)."""
 	keyBlocks = obj.data.shape_keys.key_blocks
 	stored = [(key, key.value) for key in keyBlocks]
+	muted = _mute_shape_key_drivers(obj)
 	try:
 		for key in keyBlocks[1:]:
 			key.value = values.get(key.name, 0.0)
@@ -221,6 +246,7 @@ def _evaluated_mesh_with_key_values(obj, values):
 		return bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph))
 	finally:
 		_restore_shape_key_values(stored)
+		_unmute_drivers(muted)
 		obj.data.update()
 		bpy.context.view_layer.update()
 
@@ -427,6 +453,19 @@ def _build_blend_shape_entries_for_export(
 	basis, shapeKeys = _get_export_shape_keys(rawsubmesh.data)
 	if basis is None or not shapeKeys:
 		return []
+	muted = _mute_shape_key_drivers(rawsubmesh)
+	drivenKeys = {
+		fcurve.data_path for fcurve in muted
+	}
+	drivenNames = [
+		str(key.name) for key in shapeKeys
+		if f'key_blocks["{bpy.utils.escape_identifier(key.name)}"].value' in drivenKeys
+	]
+	if drivenNames:
+		print(
+			f"Shape keys with drivers on {rawsubmesh.name} exported at full value "
+			"(drivers ignored during export): " + ", ".join(drivenNames)
+		)
 	stored = _temporarily_zero_shape_key_values(rawsubmesh)
 	result = []
 	try:
@@ -564,6 +603,7 @@ def _build_blend_shape_entries_for_export(
 		if "rawBasisMesh" in locals():
 			bpy.data.meshes.remove(rawBasisMesh)
 		_restore_shape_key_values(stored)
+		_unmute_drivers(muted)
 		rawsubmesh.data.update()
 		bpy.context.view_layer.update()
 	return result
