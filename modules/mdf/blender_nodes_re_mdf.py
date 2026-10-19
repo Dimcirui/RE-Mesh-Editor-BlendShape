@@ -1305,6 +1305,8 @@ MHWILDS_LIVE_PROPS = set(["ChangeUV","UseAOSecondaryUV","OcclusionParam","AlphaA
 MHWILDS_LIVE_PROPS.update(MHWILDS_MULTIBLEND_LIVE_PROPS)
 from .blender_mhwilds_fur import FUR_PROPS
 MHWILDS_LIVE_PROPS.update(FUR_PROPS)
+from .blender_mhwilds_hair import HAIR_LIVE_PROPS
+MHWILDS_LIVE_PROPS.update(HAIR_LIVE_PROPS)
 MHWILDS_LIVE_PROPS.update({"AddColorUV","SSSParam","SSSProfile"})
 for _channel in ("R","G","B","A"):
 	MHWILDS_LIVE_PROPS.update([f"ColorLayer_{_channel}",f"Use_{_channel}",f"UseOpacity_{_channel}",f"PrevHeight_{_channel}",f"UseThrough_Normal_{_channel}",

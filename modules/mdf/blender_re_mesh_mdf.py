@@ -27,7 +27,8 @@ try:
 	usedTextureSet = getUsedTextureNodes(
 	propFileList = [
 		"blender_re_mesh_mdf.py",
-		"blender_nodes_re_mdf.py",])
+		"blender_nodes_re_mdf.py",
+		"blender_mhwilds_hair.py",])
 except Exception as err:
 	print(f"Unable to load usable properties - {str(err)}")
 	usedTextureSet = set()
@@ -1612,6 +1613,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 								
 								matInfo["albedoNodeLayerGroup"].addMixLayer(mixColorNode.outputs["Color"],factorOutSocket = None,mixType = "MULTIPLY",mixFactor = 1.0)
 								matInfo["roughnessNodeLayerGroup"].addMixLayer(currentMaskNode.outputs["Alpha"],factorOutSocket = None,mixType = "MIX",mixFactor = 1.0)
+				from .blender_mhwilds_hair import addHairSpecularNodes
+				addHairSpecularNodes(nodeTree,matInfo)
 				from .blender_mhwilds_fur import add_fur_surface
 				add_fur_surface(nodeTree,matInfo)
 				#Finish process by linking to bsdf shader
