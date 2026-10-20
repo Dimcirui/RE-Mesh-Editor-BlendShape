@@ -1440,7 +1440,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						links.new(nodes["ColorParam"].outputs["Alpha"],alphaMultNode.inputs[1])
 						matInfo["alphaSocket"] = alphaMultNode.outputs["Value"]
 					addMHWildsMultiBlendNodes(nodeTree,matInfo)
-					if "lens" in matInfo["blenderMaterial"].name.lower():
+					#Base_*_ExpTransparent (shaderType 16, e.g. eyewhiteshadow/hairshadow) is forward blended, not alpha tested
+					if "lens" in matInfo["blenderMaterial"].name.lower() or "exptransparent" in matInfo["mmtrName"]:
 						matInfo["isAlphaBlend"] = True
 						
 				if "Alpha" in matInfo["mPropDict"] and "StitchMap" not in matInfo["textureNodeDict"]:  
