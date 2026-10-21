@@ -246,7 +246,7 @@ baseUVTilingList = set([#Node types that use UV_Tiling property
 from ..gen_functions import raiseWarning,getBit,wildCardFileSearch
 from .file_re_mdf import readMDF,getMDFVersionToGameName
 from ..tex.blender_re_tex import loadTex
-from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup,addMHWildsFakeSphereNodes,addMHWildsColorLayerNodes,addMHWildsPanoramaNodes,addMHWildsDetailLayerNodes,addMHWildsFilmNodes,addMHWildsFixedAlphaNodes,mhWildsFilmActive,mhWildsTextureNeeded,addMHWildsBlendNormalNodes,addMHWildsEmissiveNodes,addMHWildsBaseUVNodes,addMHWildsAONodes,addMHWildsAlphaAdjustNodes,addMHWildsAlphaCoverageNodes
+from .blender_nodes_re_mdf import addImageNode,addTextureNode,addPropertyNode,dynamicColorMixLayerNodeGroup,getBentNormalNodeGroup,getDualUVMappingNodeGroup,getMHWildsSkinMappingNodeGroup,getMHWildsDetailMapNodeGroup,addMHWildsFakeSphereNodes,addMHWildsColorLayerNodes,addMHWildsPanoramaNodes,addMHWildsDetailLayerNodes,addMHWildsFilmNodes,addMHWildsFixedAlphaNodes,mhWildsFilmActive,mhWildsTextureNeeded,addMHWildsBlendNormalNodes,addMHWildsEmissiveNodes,addMHWildsBaseUVNodes,addMHWildsAONodes,addMHWildsSecondaryUVBlendNodes,addMHWildsAlphaAdjustNodes,addMHWildsAlphaCoverageNodes
 from ..ddsconv.directx.texconv import Texconv, unload_texconv
 from .blender_mhwilds_multiblend import addMHWildsMultiBlendNodes,addMHWildsMultiBlendEmissionMask
 from .blender_mhwilds_skin import isMHWildsSkinEdit,addMHWildsSkinTintNodes,addMHWildsSkinSSSNodes
@@ -829,6 +829,9 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 				if matInfo["gameName"] == "MHWILDS":
 					addMHWildsBaseUVNodes(nodeTree,matInfo)
 					addMHWildsAONodes(nodeTree,matInfo)
+					addMHWildsSecondaryUVBlendNodes(nodeTree,matInfo)
+					from .blender_nodes_re_mdf import addMHWildsUVTileNodes
+					addMHWildsUVTileNodes(nodeTree,matInfo)
 				
 				
 				#WILDS
@@ -893,35 +896,40 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 						#matInfo["albedoNodeLayerGroup"].addMixLayer(skinMapNode.outputs["Color"],factorOutSocket = None,mixType = "OVERLAY",mixFactor = 1.0)
 					
 				if "HairOverMap" in matInfo["textureNodeDict"]:
-					nodeTree.links.new(UVMap2Node.outputs["UV"],matInfo["textureNodeDict"]["HairOverMap"].inputs["Vector"])
-					useHairOverFactorSocket = None
-					hairOverOutSocket = matInfo["textureNodeDict"]["HairOverMap"].outputs["Color"]
+					from .blender_mhwilds_hair import addHairOverNodes
+					wildsHairOver = addHairOverNodes(nodeTree,matInfo,matInfo["textureNodeDict"]["HairOverMap"])
+					if wildsHairOver != None:
+						matInfo["albedoNodeLayerGroup"].addMixLayer(wildsHairOver,factorOutSocket = None,mixType = "MULTIPLY",mixFactor = 1.0)
+					else:
+						nodeTree.links.new(UVMap2Node.outputs["UV"],matInfo["textureNodeDict"]["HairOverMap"].inputs["Vector"])
+						useHairOverFactorSocket = None
+						hairOverOutSocket = matInfo["textureNodeDict"]["HairOverMap"].outputs["Color"]
 					
-					if "UseHairOverMap" in matInfo["mPropDict"]:
-						useHairOverFactorSocket = addPropertyNode(matInfo["mPropDict"]["UseHairOverMap"], matInfo["currentPropPos"], nodeTree).outputs["Value"]
-					if "HairOverColorA" in matInfo["mPropDict"] and "HairOverColorB" in matInfo["mPropDict"]:
-						hairOverANode = addPropertyNode(matInfo["mPropDict"]["HairOverColorA"], matInfo["currentPropPos"], nodeTree)
+						if "UseHairOverMap" in matInfo["mPropDict"]:
+							useHairOverFactorSocket = addPropertyNode(matInfo["mPropDict"]["UseHairOverMap"], matInfo["currentPropPos"], nodeTree).outputs["Value"]
+						if "HairOverColorA" in matInfo["mPropDict"] and "HairOverColorB" in matInfo["mPropDict"]:
+							hairOverANode = addPropertyNode(matInfo["mPropDict"]["HairOverColorA"], matInfo["currentPropPos"], nodeTree)
 						
-						hairOverBNode = addPropertyNode(matInfo["mPropDict"]["HairOverColorB"], matInfo["currentPropPos"], nodeTree)
+							hairOverBNode = addPropertyNode(matInfo["mPropDict"]["HairOverColorB"], matInfo["currentPropPos"], nodeTree)
 						
 						
-						mixHairOverNode = nodes.new("ShaderNodeMixRGB")
-						mixHairOverNode.location = matInfo["textureNodeDict"]["HairOverMap"].location + Vector((300,0))
-						mixHairOverNode.blend_type = "MIX"
-						#The input order may need to be swapped
-						links.new(hairOverANode.outputs["Color"],mixHairOverNode.inputs["Color2"])
-						links.new(hairOverBNode.outputs["Color"],mixHairOverNode.inputs["Color1"])
-						links.new(matInfo["textureNodeDict"]["HairOverMap"].outputs["Alpha"],mixHairOverNode.inputs["Fac"])
+							mixHairOverNode = nodes.new("ShaderNodeMixRGB")
+							mixHairOverNode.location = matInfo["textureNodeDict"]["HairOverMap"].location + Vector((300,0))
+							mixHairOverNode.blend_type = "MIX"
+							#The input order may need to be swapped
+							links.new(hairOverANode.outputs["Color"],mixHairOverNode.inputs["Color2"])
+							links.new(hairOverBNode.outputs["Color"],mixHairOverNode.inputs["Color1"])
+							links.new(matInfo["textureNodeDict"]["HairOverMap"].outputs["Alpha"],mixHairOverNode.inputs["Fac"])
 						
-						multHairOverNode = nodes.new("ShaderNodeMixRGB")
-						multHairOverNode.location = mixHairOverNode.location + Vector((300,0))
-						multHairOverNode.blend_type = "MULTIPLY"
-						links.new(mixHairOverNode.outputs["Color"],multHairOverNode.inputs["Color1"])
-						links.new(matInfo["textureNodeDict"]["HairOverMap"].outputs["Color"],multHairOverNode.inputs["Color2"])
-						multHairOverNode.inputs["Fac"].default_value = 1.0
-						hairOverOutSocket = multHairOverNode.outputs["Color"]
-					#TODO Look into correct way to apply hair over, alpha is used to blend through two hairover colors, also input order may need to be changed. Alma's hair does not display correctly with inputs not swapped, but swapping causes issues on things without hairover.
-					matInfo["albedoNodeLayerGroup"].addMixLayer(hairOverOutSocket,factorOutSocket = useHairOverFactorSocket,mixType = "MULTIPLY",mixFactor = 1.0,swapInputs = False)
+							multHairOverNode = nodes.new("ShaderNodeMixRGB")
+							multHairOverNode.location = mixHairOverNode.location + Vector((300,0))
+							multHairOverNode.blend_type = "MULTIPLY"
+							links.new(mixHairOverNode.outputs["Color"],multHairOverNode.inputs["Color1"])
+							links.new(matInfo["textureNodeDict"]["HairOverMap"].outputs["Color"],multHairOverNode.inputs["Color2"])
+							multHairOverNode.inputs["Fac"].default_value = 1.0
+							hairOverOutSocket = multHairOverNode.outputs["Color"]
+						#TODO Look into correct way to apply hair over, alpha is used to blend through two hairover colors, also input order may need to be changed. Alma's hair does not display correctly with inputs not swapped, but swapping causes issues on things without hairover.
+						matInfo["albedoNodeLayerGroup"].addMixLayer(hairOverOutSocket,factorOutSocket = useHairOverFactorSocket,mixType = "MULTIPLY",mixFactor = 1.0,swapInputs = False)
 				#Base layer overrides
 				if "Roughness" in matInfo["mPropDict"]:
 					roughnessNode = addPropertyNode(matInfo["mPropDict"]["Roughness"], matInfo["currentPropPos"], nodeTree)
@@ -1616,6 +1624,10 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 								matInfo["roughnessNodeLayerGroup"].addMixLayer(currentMaskNode.outputs["Alpha"],factorOutSocket = None,mixType = "MIX",mixFactor = 1.0)
 				from .blender_mhwilds_hair import addHairSpecularNodes
 				addHairSpecularNodes(nodeTree,matInfo)
+				from .blender_mhwilds_hair import addHairAlphaNodes
+				addHairAlphaNodes(nodeTree,matInfo)
+				from .blender_mhwilds_hair import addHairAOLiftNodes
+				addHairAOLiftNodes(nodeTree,matInfo)
 				from .blender_mhwilds_fur import add_fur_surface
 				add_fur_surface(nodeTree,matInfo)
 				#Finish process by linking to bsdf shader
@@ -1708,6 +1720,10 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					if "EmissiveMap" in matInfo["textureNodeDict"]:
 						addMHWildsEmissiveNodes(nodeTree,matInfo)
 					addMHWildsMultiBlendEmissionMask(nodeTree,matInfo)
+					from .blender_nodes_re_mdf import addMHWildsBasecolorToEmissiveNodes
+					addMHWildsBasecolorToEmissiveNodes(nodeTree,matInfo)
+					from .blender_nodes_re_mdf import addMHWildsAntiTranslucentNodes
+					addMHWildsAntiTranslucentNodes(nodeTree,matInfo,nodeBSDF)
 				if matInfo["aoNodeLayerGroup"].currentOutSocket != None and not matInfo["disableAO"]:
 					#This isn't the correct way to apply AO but EEVEE has no good ways of doing AO maps that doesn't have downsides (such as killing screenspace reflections and subsurface)
 					
@@ -1976,6 +1992,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 					matInfo["currentShaderOutput"] = mixShader.outputs["Shader"]
 					currentPos[0] += 300
 					
+				from .blender_nodes_re_mdf import addMHWildsRoughTransparentTintNodes
+				addMHWildsRoughTransparentTintNodes(nodeTree,matInfo,nodeBSDF)
 				if matInfo["disableShadowCast"]:
 					#Blender 4.2 made it such a pain to disable shadow casting on a material
 					#Used to be just a drop down menu :/

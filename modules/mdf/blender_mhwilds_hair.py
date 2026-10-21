@@ -28,6 +28,10 @@ HAIR_PARAM_ALIASES = {
 #VS #75 rounds it to 8 bits first, which a byte color attribute already is.
 VERTEX_COLOR_LAYER = "Col"
 HAIR_LIVE_PROPS = {name for names in HAIR_PARAM_ALIASES.values() for name in names}
+HAIR_OVER_PROPS = ('UseHairOverMap','PrimaryUV_OverMap','HairOverColorA','HairOverColorB','HairOverColorA_B_Contrast','HairOverColorA_B_Shift')
+HAIR_ALPHA_PROPS = ('Use_DefaultAlpha','AO_Fade_Alpha','EdgeWidth','EdgeFade')
+HAIR_LIVE_PROPS.update(HAIR_OVER_PROPS + HAIR_ALPHA_PROPS)
+SAFE_DIVISOR = 1e-4#0x38D1B717: the shaders swap a zero Contrast/EdgeWidth for this
 #Without these the lobes have no meaning; the rest fall back to neutral defaults.
 REQUIRED_HAIR_PARAMS = ('Primary Sharpness','Secondary Sharpness','Light Direction')
 HAIR_DECODE_OFFSET = 0.9960784316062927#2*x - 254/255, as in the shader (0xBF7EFEFF); not the 128/255 center of FurFlow
@@ -224,3 +228,139 @@ def addVertexMaskNodes(nodeTree,matInfo,node):
 	nodeTree.links.new(enabled.outputs["Value"],mask.inputs["Factor"])
 	nodeTree.links.new(color.outputs["Alpha"],mask.inputs["B"])
 	nodeTree.links.new(mask.outputs["Result"],node.inputs["Vertex Mask"])
+
+def hairOverNodeGroup():
+	#Wilds HairOver (hair #64 and Base_Equip #65, identical): with UseHairOverMap the base is
+	#2 * albedo * lerp(B, A, smooth(t)) * HO.rgb, t = saturate(saturate(C - (C+1)(1-Shift) + HO.a) / C); without it 2 * 0.5.
+	name = "MHWildsHairOver_v1"
+	group = bpy.data.node_groups.get(name)
+	if group != None:
+		return group
+	from .blender_nodes_re_mdf import newGroupSockets
+	group = bpy.data.node_groups.new(name,"ShaderNodeTree")
+	newGroupSockets(group,[("Hair Over","NodeSocketColor"),("Hair Over Alpha","NodeSocketFloat"),("UseHairOverMap","NodeSocketFloat"),
+		("Color A","NodeSocketColor"),("Color B","NodeSocketColor"),("Contrast","NodeSocketFloat"),("Shift","NodeSocketFloat")],"INPUT")
+	newGroupSockets(group,[("Factor","NodeSocketColor")],"OUTPUT")
+	k = _Builder(group)
+	i = k.nodes.new("NodeGroupInput").outputs
+	contrast = i["Contrast"]
+	t = k.math("ADD",k.math("SUBTRACT",contrast,k.math("MULTIPLY",k.math("ADD",contrast,1.0),k.math("SUBTRACT",1.0,i["Shift"]))),i["Hair Over Alpha"],clamp = True)
+	divisor = k.select(k.math("COMPARE",contrast,0.0,0.0),SAFE_DIVISOR,contrast)
+	smooth = k.smoothstep01(k.math("DIVIDE",t,divisor,clamp = True))
+	a,b,over = k.separate(i["Color A"]),k.separate(i["Color B"]),k.separate(i["Hair Over"])
+	enabled = k.greater0(i["UseHairOverMap"])
+	factor = [k.select(enabled,k.math("MULTIPLY",k.math("MULTIPLY",k.lerp(b[c],a[c],smooth),over[c]),2.0),1.0) for c in ("Red","Green","Blue")]
+	output = k.nodes.new("NodeGroupOutput")
+	k.links.new(k.combineColor(*factor),output.inputs["Factor"])
+	return group
+
+def addHairOverNodes(nodeTree,matInfo,texture):
+	"""Returns the color the albedo is multiplied by, or None when the material has no Wilds HairOver parameters."""
+	props = matInfo["mPropDict"]
+	if matInfo["gameName"] != "MHWILDS" or "HairOverColorA_B_Contrast" not in props:
+		return None
+	from .blender_nodes_re_mdf import linkMHWildsProp
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = hairOverNodeGroup()
+	node.name = "MHWilds Hair Over"
+	node.location = texture.location + Vector((300,0))
+	#PrimaryUV_OverMap picks UV0, otherwise the secondary UV
+	primary,secondary = nodeTree.nodes.get("UVMap1Node"),nodeTree.nodes.get("UVMap2Node")
+	if primary != None and secondary != None and "Vector" in texture.inputs:
+		pick = nodeTree.nodes.new("ShaderNodeMix")
+		pick.data_type = "VECTOR"
+		pick.location = texture.location + Vector((-250,0))
+		usePrimary = nodeTree.nodes.new("ShaderNodeMath")
+		usePrimary.operation = "GREATER_THAN"
+		usePrimary.inputs[1].default_value = 0.0
+		linkMHWildsProp(nodeTree,matInfo,"PrimaryUV_OverMap",usePrimary.inputs[0],0.0)
+		nodeTree.links.new(usePrimary.outputs["Value"],pick.inputs["Factor"])
+		nodeTree.links.new(secondary.outputs["UV"],pick.inputs["A"])
+		nodeTree.links.new(primary.outputs["UV"],pick.inputs["B"])
+		nodeTree.links.new(pick.outputs["Result"],texture.inputs["Vector"])
+	nodeTree.links.new(texture.outputs["Color"],node.inputs["Hair Over"])
+	nodeTree.links.new(texture.outputs["Alpha"],node.inputs["Hair Over Alpha"])
+	linkMHWildsProp(nodeTree,matInfo,"UseHairOverMap",node.inputs["UseHairOverMap"],0.0)
+	linkMHWildsProp(nodeTree,matInfo,"HairOverColorA",node.inputs["Color A"],(1.0,1.0,1.0,1.0),"Color")
+	linkMHWildsProp(nodeTree,matInfo,"HairOverColorB",node.inputs["Color B"],(1.0,1.0,1.0,1.0),"Color")
+	linkMHWildsProp(nodeTree,matInfo,"HairOverColorA_B_Contrast",node.inputs["Contrast"],1.0)
+	linkMHWildsProp(nodeTree,matInfo,"HairOverColorA_B_Shift",node.inputs["Shift"],0.5)
+	return node.outputs["Factor"]
+
+def hairAlphaNodeGroup():
+	#Hair #64 (NoPDO and NoPDO_FadeAlpha, identical) when Use_DefaultAlpha is 0:
+	#a1 = a + (1-AO)*AO_Fade_Alpha*(3*sat(2a) - a - 2*sat(2a-1)); alpha = smooth(e) * a1,
+	#e = saturate(saturate(W - (1-EdgeFade)(W+1) + |N.V|) / W), W = EdgeWidth. a is the AlphaAdjust * ColorParam.w alpha.
+	name = "MHWildsHairAlpha_v1"
+	group = bpy.data.node_groups.get(name)
+	if group != None:
+		return group
+	from .blender_nodes_re_mdf import newGroupSockets
+	group = bpy.data.node_groups.new(name,"ShaderNodeTree")
+	newGroupSockets(group,[("Alpha","NodeSocketFloat"),("AO","NodeSocketFloat"),("Use_DefaultAlpha","NodeSocketFloat"),
+		("AO_Fade_Alpha","NodeSocketFloat"),("EdgeWidth","NodeSocketFloat"),("EdgeFade","NodeSocketFloat")],"INPUT")
+	newGroupSockets(group,[("Alpha","NodeSocketFloat")],"OUTPUT")
+	k = _Builder(group)
+	i = k.nodes.new("NodeGroupInput").outputs
+	alpha = i["Alpha"]
+	twice = k.math("MULTIPLY",alpha,2.0)
+	boost = k.math("SUBTRACT",k.math("SUBTRACT",k.math("MULTIPLY",k.saturate(twice),3.0),alpha),k.math("MULTIPLY",k.math("ADD",twice,-1.0,clamp = True),2.0))
+	occlusion = k.math("SUBTRACT",1.0,k.saturate(i["AO"]))
+	faded = k.math("MULTIPLY_ADD",k.math("MULTIPLY",occlusion,i["AO_Fade_Alpha"]),boost,alpha)
+	geometry = k.nodes.new("ShaderNodeNewGeometry")
+	facing = k.math("ABSOLUTE",k.vec("DOT_PRODUCT",geometry.outputs["Normal"],geometry.outputs["Incoming"]))
+	width = i["EdgeWidth"]
+	edge = k.math("ADD",k.math("SUBTRACT",width,k.math("MULTIPLY",k.math("SUBTRACT",1.0,i["EdgeFade"]),k.math("ADD",width,1.0))),facing,clamp = True)
+	divisor = k.select(k.math("COMPARE",width,0.0,0.0),SAFE_DIVISOR,width)
+	fadedEdge = k.math("MULTIPLY",k.smoothstep01(k.math("DIVIDE",edge,divisor,clamp = True)),faded)
+	output = k.nodes.new("NodeGroupOutput")
+	k.links.new(k.select(k.greater0(i["Use_DefaultAlpha"]),alpha,fadedEdge),output.inputs["Alpha"])
+	return group
+
+def addHairAlphaNodes(nodeTree,matInfo):
+	props = matInfo["mPropDict"]
+	if matInfo.get("alphaSocket") == None or not all(name in props for name in ("AO_Fade_Alpha","EdgeWidth","EdgeFade")):
+		return None
+	from .blender_nodes_re_mdf import linkMHWildsProp
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = hairAlphaNodeGroup()
+	node.name = "MHWilds Hair Alpha"
+	nodeTree.links.new(matInfo["alphaSocket"],node.inputs["Alpha"])
+	occlusion = nodeTree.nodes.get("MHWildsOcclusion")
+	if occlusion != None:
+		nodeTree.links.new(occlusion.outputs["Value"],node.inputs["AO"])
+	else:
+		node.inputs["AO"].default_value = 1.0
+	for name in HAIR_ALPHA_PROPS:
+		linkMHWildsProp(nodeTree,matInfo,name,node.inputs[name],0.0)
+	matInfo["alphaSocket"] = node.outputs["Alpha"]
+	return node
+
+def addHairAOLiftNodes(nodeTree,matInfo):
+	#Hair (#64 NoPDO and FadeAlpha only) writes lerp(AO, 1, DeepShadowColor.a) to the lighting AO (RT3.z), because
+	#DeepShadow already darkens the base color with AO; every other Wilds master writes the plain AO there.
+	#The preview multiplies that AO into the base color, so lift it the same way instead of darkening twice.
+	aoLayer = matInfo["aoNodeLayerGroup"]
+	occlusion = nodeTree.nodes.get("MHWildsOcclusion")
+	if occlusion == None or aoLayer.currentOutSocket == None or "DeepShadowColor" not in matInfo["mPropDict"]:
+		return None
+	from .blender_nodes_re_mdf import linkMHWildsProp
+	clamp = nodeTree.nodes.new("ShaderNodeMath")
+	clamp.operation = "ADD"
+	clamp.use_clamp = True
+	lift = nodeTree.nodes.new("ShaderNodeMix")
+	lift.data_type = "FLOAT"
+	lift.name = "MHWilds Hair AO Lift"
+	lift.location = occlusion.location + Vector((200,-150))
+	lift.inputs["B"].default_value = 1.0
+	#Replace the plain AO where it feeds the AO layer, keep every other consumer (DeepShadow, hair alpha) on the raw value
+	for link in [l for l in occlusion.outputs["Value"].links if l.to_node != lift]:
+		if link.to_node.bl_idname == "ShaderNodeGroup" and link.to_node.name.startswith(("RE Hair","MHWilds Hair")):
+			continue
+		nodeTree.links.new(lift.outputs["Result"],link.to_socket)
+	nodeTree.links.new(occlusion.outputs["Value"],clamp.inputs[0])
+	nodeTree.links.new(clamp.outputs["Value"],lift.inputs["A"])
+	linkMHWildsProp(nodeTree,matInfo,"DeepShadowColor",lift.inputs["Factor"],output = "Alpha")
+	if aoLayer.currentOutSocket == occlusion.outputs["Value"]:
+		aoLayer.currentOutSocket = lift.outputs["Result"]
+	return lift

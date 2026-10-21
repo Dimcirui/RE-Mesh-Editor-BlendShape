@@ -1307,6 +1307,9 @@ from .blender_mhwilds_fur import FUR_PROPS
 MHWILDS_LIVE_PROPS.update(FUR_PROPS)
 from .blender_mhwilds_hair import HAIR_LIVE_PROPS
 MHWILDS_LIVE_PROPS.update(HAIR_LIVE_PROPS)
+MHWILDS_LIVE_PROPS.update({"ParallaxEmit_Blur","UV_Secondary_Blend","Use_SecodaryUV_DetailMask","UseAOSecondaryUV",
+	"Use_Basecolor_to_Emissive","Use_Basecolor_Mask","Basecolor_Mask_Min","Basecolor_Mask_Max","UV_Tile","UV_Tile_Offset","RoughTransparent_Color",
+	"Use_AntiTranslucent_Diffuse","TranslucentParam","Use_RimTranslucent","RimTranslucent_NormalBlend","RimTrasnlucent_Power"})
 MHWILDS_LIVE_PROPS.update({"AddColorUV","SSSParam","SSSProfile"})
 for _channel in ("R","G","B","A"):
 	MHWILDS_LIVE_PROPS.update([f"ColorLayer_{_channel}",f"Use_{_channel}",f"UseOpacity_{_channel}",f"PrevHeight_{_channel}",f"UseThrough_Normal_{_channel}",
@@ -1573,8 +1576,11 @@ def getMHWildsAlphaAdjustNodeGroup(nodeTree):
 	node.node_tree = nodeGroup
 	return node
 
+#Masters whose pixel shaders declare AlphaAdjust but never read it (.240906211 #64/#65)
+MHWILDS_ALPHA_ADJUST_UNUSED = {"base_eye_emit.mmtr","base_eyerefract_emit.mmtr","base_gold_push.mmtr"}
+
 def addMHWildsAlphaAdjustNodes(nodeTree,matInfo):
-	if matInfo["gameName"] != "MHWILDS" or "AlphaAdjust" not in matInfo["mPropDict"]:
+	if matInfo["gameName"] != "MHWILDS" or "AlphaAdjust" not in matInfo["mPropDict"] or matInfo["mmtrName"] in MHWILDS_ALPHA_ADJUST_UNUSED:
 		return
 	alpha = matInfo.get("mhWildsRawAlphaSource")
 	if alpha == None or matInfo["alphaSocket"] != alpha:
@@ -1810,6 +1816,10 @@ def addMHWildsDetailLayerNodes(nodeTree,matInfo):
 	def propValue(name,default,index = 0):
 		return float(props[name].propValue[index]) if name in props else default
 	maskNode = textureNodes["DetailMaskMap"]
+	#MultiBlend #57 %885..%887: Use_SecodaryUV_DetailMask > 0 ? UV1 : base (ChangeUV) UV
+	if "Use_SecodaryUV_DetailMask" in props and "UVMap2Node" in nodeTree.nodes and "Vector" in maskNode.inputs:
+		uv = getMHWildsBaseAOUVNode(nodeTree,matInfo)
+		nodeTree.links.new(mhWildsUVSelect(nodeTree,matInfo,"Use_SecodaryUV_DetailMask",uv.outputs["Base UV"],nodeTree.nodes["UVMap2Node"].outputs["UV"]),maskNode.inputs["Vector"])
 	maskSep = nodes.new("ShaderNodeSeparateColor")
 	maskSep.location = maskNode.location + Vector((300,0))
 	links.new(maskNode.outputs["Color"],maskSep.inputs["Color"])
@@ -2235,6 +2245,256 @@ def getMHWildsVectorEmitNodeGroup(nodeTree):
 	nodeGroupNode.node_tree = nodeGroup
 	return nodeGroupNode
 
+PARALLAX_BLUR_TAPS = 4
+
+def getAverageNodeGroup(count):
+	#Mean of count color/alpha pairs
+	name = f"REAverage{count}_v1"
+	group = bpy.data.node_groups.get(name)
+	if group != None:
+		return group
+	group = bpy.data.node_groups.new(name,"ShaderNodeTree")
+	newGroupSockets(group,[s for k in range(count) for s in ((f"Color{k}","NodeSocketColor"),(f"Alpha{k}","NodeSocketFloat"))],"INPUT")
+	newGroupSockets(group,[("Color","NodeSocketColor"),("Alpha","NodeSocketFloat")],"OUTPUT")
+	b = ShaderGroupBuilder(group)
+	i = b.nodes.new("NodeGroupInput").outputs
+	color = i["Color0"];alpha = i["Alpha0"]
+	for k in range(1,count):
+		add = b.nodes.new("ShaderNodeVectorMath");add.operation = "ADD"
+		b.links.new(color,add.inputs[0]);b.links.new(i[f"Color{k}"],add.inputs[1]);color = add.outputs["Vector"]
+		alpha = b.math("ADD",alpha,i[f"Alpha{k}"])
+	scale = b.nodes.new("ShaderNodeVectorMath");scale.operation = "SCALE";scale.inputs["Scale"].default_value = 1.0/count
+	b.links.new(color,scale.inputs[0])
+	out = b.nodes.new("NodeGroupOutput")
+	b.links.new(scale.outputs["Vector"],out.inputs["Color"]);b.links.new(b.math("MULTIPLY",alpha,1.0/count),out.inputs["Alpha"])
+	return group
+
+def mhWildsUVSelect(nodeTree,matInfo,propName,a,b,blend = False):
+	#Vector a when the property is 0, b when it is on (> 0), or lerp(a, b, value) with blend
+	mix = nodeTree.nodes.new("ShaderNodeMix")
+	mix.data_type = "VECTOR"
+	nodeTree.links.new(a,mix.inputs["A"]);nodeTree.links.new(b,mix.inputs["B"])
+	if blend:
+		linkMHWildsProp(nodeTree,matInfo,propName,mix.inputs["Factor"],0.0)
+	else:
+		on = nodeTree.nodes.new("ShaderNodeMath");on.operation = "GREATER_THAN";on.inputs[1].default_value = 0.0
+		linkMHWildsProp(nodeTree,matInfo,propName,on.inputs[0],0.0)
+		nodeTree.links.new(on.outputs["Value"],mix.inputs["Factor"])
+	return mix.outputs["Result"]
+
+def addMHWildsSecondaryUVBlendNodes(nodeTree,matInfo):
+	#Base_eye_Emit #59: uv = lerp(ChangeUV ? UV1 : UV0, UV1, UV_Secondary_Blend) for NRRO, albedo, VectorEmitMap and the
+	#non-parallax EmissiveMap; the AO sample stays on UV1 when UseAOSecondaryUV is on.
+	props = matInfo["mPropDict"]
+	secondary = nodeTree.nodes.get("UVMap2Node")
+	if matInfo["gameName"] != "MHWILDS" or "UV_Secondary_Blend" not in props or secondary == None:
+		return
+	uv = getMHWildsBaseAOUVNode(nodeTree,matInfo)
+	blended = mhWildsUVSelect(nodeTree,matInfo,"UV_Secondary_Blend",uv.outputs["Base UV"],secondary.outputs["UV"],blend = True)
+	slots = ["BaseDielectricMap","BaseAlphaMap","NormalRoughnessOcclusionMap","AlphaTranslucentOcclusionSSSMap","VectorEmitMap"]
+	if mhWildsPropValue(props,"UseParallaxEmit") <= 0.0:
+		slots.append("EmissiveMap")
+	for name in slots:
+		image = matInfo["textureNodeDict"].get(name)
+		if image != None and "Vector" in image.inputs:
+			nodeTree.links.new(blended,image.inputs["Vector"])
+	aoUV = mhWildsUVSelect(nodeTree,matInfo,"UseAOSecondaryUV",blended,secondary.outputs["UV"])
+	for node in nodeTree.nodes:
+		if node.bl_idname == "ShaderNodeTexImage" and node.name.startswith("AO_"):
+			nodeTree.links.new(aoUV,node.inputs["Vector"])
+
+def getMHWildsBasecolorToEmissiveNodeGroup():
+	#Use_Basecolor_to_Emissive != 0 (MultiBlend #61, RoughTransparent #80, eye #57, Fur #111; same block in all):
+	#r = max3(EmissiveMap*Emissive_Color), or (max3(EmissiveMap) < Emissive_Color.a ? 0 : 1) when that alpha < 1;
+	#RoughTransparent's Use_Basecolor_Mask scales r by smoothstep((max3(base) - Min) / (Max - Min)).
+	#Emission becomes base*r (Intensity*2^Power stay on the strength side), base becomes base*(1 - saturate(r)).
+	#.240906211 Fix_BaseColor_to_Emissive kept the base; .250206176 always darkens it, so Fix is ignored.
+	name = "MHWildsBasecolorToEmissive_v1"
+	group = bpy.data.node_groups.get(name)
+	if group != None:
+		return group
+	group = bpy.data.node_groups.new(name,"ShaderNodeTree")
+	newGroupSockets(group,[("Base","NodeSocketColor"),("Emission","NodeSocketColor"),("EmissiveMap","NodeSocketColor"),("Emissive Alpha","NodeSocketFloat"),
+		("Use_Basecolor_to_Emissive","NodeSocketFloat"),("Use_Basecolor_Mask","NodeSocketFloat"),("Basecolor_Mask_Min","NodeSocketFloat"),("Basecolor_Mask_Max","NodeSocketFloat")],"INPUT")
+	newGroupSockets(group,[("Base","NodeSocketColor"),("Emission","NodeSocketColor")],"OUTPUT")
+	b = ShaderGroupBuilder(group)
+	i = b.nodes.new("NodeGroupInput").outputs
+	def max3(socket):
+		c = b.separate(socket)
+		return b.math("MAXIMUM",b.math("MAXIMUM",c["Red"],c["Green"]),c["Blue"])
+	hard = b.math("SUBTRACT",1.0,b.math("LESS_THAN",max3(i["EmissiveMap"]),i["Emissive Alpha"]))
+	r = b.select(b.math("LESS_THAN",i["Emissive Alpha"],1.0),hard,max3(i["Emission"]))
+	base = b.separate(i["Base"])
+	brightness = max3(i["Base"])
+	span = b.math("SUBTRACT",i["Basecolor_Mask_Max"],i["Basecolor_Mask_Min"])
+	mask = b.smoothstep01(b.math("DIVIDE",b.math("SUBTRACT",brightness,i["Basecolor_Mask_Min"]),span,clamp = True))
+	r = b.math("MULTIPLY",r,b.select(b.math("COMPARE",i["Use_Basecolor_Mask"],0.0,0.0),1.0,mask))
+	keep = b.math("SUBTRACT",1.0,b.math("ADD",r,0.0,clamp = True))
+	on = b.math("SUBTRACT",1.0,b.math("COMPARE",i["Use_Basecolor_to_Emissive"],0.0,0.0))
+	emission = b.separate(i["Emission"])
+	channels = ("Red","Green","Blue")
+	out = b.nodes.new("NodeGroupOutput")
+	b.links.new(b.combineColor(*[b.select(on,b.math("MULTIPLY",base[c],keep),base[c]) for c in channels]),out.inputs["Base"])
+	b.links.new(b.combineColor(*[b.select(on,b.math("MULTIPLY",base[c],r),emission[c]) for c in channels]),out.inputs["Emission"])
+	return group
+
+def addMHWildsBasecolorToEmissiveNodes(nodeTree,matInfo):
+	props = matInfo["mPropDict"]
+	albedo,emission = matInfo["albedoNodeLayerGroup"],matInfo["emissionColorNodeLayerGroup"]
+	if matInfo["gameName"] != "MHWILDS" or "Use_Basecolor_to_Emissive" not in props or not hasLoadedImage(matInfo,"EmissiveMap"):
+		return None
+	if albedo.currentOutSocket == None or emission.currentOutSocket == None:
+		return None
+	colorName = next((n for n in ("Emissive_color","Emissive_Color","EmissiveColor","Emissive_Color1") if n in props),None)
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = getMHWildsBasecolorToEmissiveNodeGroup()
+	node.name = "MHWilds Basecolor To Emissive"
+	links = nodeTree.links
+	links.new(albedo.currentOutSocket,node.inputs["Base"])
+	links.new(emission.currentOutSocket,node.inputs["Emission"])
+	links.new(matInfo["textureNodeDict"]["EmissiveMap"].outputs["Color"],node.inputs["EmissiveMap"])
+	if colorName != None:
+		linkMHWildsProp(nodeTree,matInfo,colorName,node.inputs["Emissive Alpha"],output = "Alpha")
+	else:
+		node.inputs["Emissive Alpha"].default_value = 1.0
+	for name,default in (("Use_Basecolor_to_Emissive",0.0),("Use_Basecolor_Mask",0.0),("Basecolor_Mask_Min",0.0),("Basecolor_Mask_Max",1.0)):
+		linkMHWildsProp(nodeTree,matInfo,name,node.inputs[name],default)
+	albedo.currentOutSocket = node.outputs["Base"]
+	emission.currentOutSocket = node.outputs["Emission"]
+	return node
+
+def getMHWildsUVTileNodeGroup():
+	#BaseAlpha_Emit_RoughTransparent #80 l.911-927: uv'' = (uv*UV_Tile)*UV_Tile_Offset.xy + UV_Tile_Offset.zw in D3D UV space
+	name = "MHWildsUVTile_v1"
+	group = bpy.data.node_groups.get(name)
+	if group != None:
+		return group
+	group = bpy.data.node_groups.new(name,"ShaderNodeTree")
+	newGroupSockets(group,[("UV","NodeSocketVector"),("UV_Tile","NodeSocketFloat"),("Scale X","NodeSocketFloat"),("Scale Y","NodeSocketFloat"),("Offset X","NodeSocketFloat"),("Offset Y","NodeSocketFloat")],"INPUT")
+	newGroupSockets(group,[("UV","NodeSocketVector")],"OUTPUT")
+	b = ShaderGroupBuilder(group)
+	i = b.nodes.new("NodeGroupInput").outputs
+	uv = b.separateXYZ(i["UV"])
+	u = b.math("MULTIPLY_ADD",b.math("MULTIPLY",uv["X"],i["UV_Tile"]),i["Scale X"],i["Offset X"])
+	#Imported V is 1 - D3D V
+	v = b.math("SUBTRACT",1.0,b.math("MULTIPLY_ADD",b.math("MULTIPLY",b.math("SUBTRACT",1.0,uv["Y"]),i["UV_Tile"]),i["Scale Y"],i["Offset Y"]))
+	out = b.nodes.new("NodeGroupOutput")
+	b.links.new(b.combineXYZ(u,v,0.0),out.inputs["UV"])
+	return group
+
+def addMHWildsUVTileNodes(nodeTree,matInfo):
+	props = matInfo["mPropDict"]
+	if matInfo["gameName"] != "MHWILDS" or "UV_Tile" not in props or "UV_Tile_Offset" not in props:
+		return None
+	uv = getMHWildsBaseAOUVNode(nodeTree,matInfo)
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = getMHWildsUVTileNodeGroup()
+	node.name = "MHWilds UV Tile"
+	node.location = uv.location + Vector((250,-200))
+	nodeTree.links.new(uv.outputs["Base UV"],node.inputs["UV"])
+	linkMHWildsProp(nodeTree,matInfo,"UV_Tile",node.inputs["UV_Tile"],1.0)
+	for index,socket in enumerate(("Scale X","Scale Y","Offset X","Offset Y")):
+		linkMHWildsProp(nodeTree,matInfo,"UV_Tile_Offset",node.inputs[socket],(1.0,1.0,0.0,0.0)[index],index)
+	#The noise map and the secondary-UV AO read are not tiled
+	for name in ("NormalRoughnessOcclusionMap","BaseAlphaMap","EmissiveMap","FxMap"):
+		image = matInfo["textureNodeDict"].get(name)
+		if image != None and "Vector" in image.inputs:
+			nodeTree.links.new(node.outputs["UV"],image.inputs["Vector"])
+	return node
+
+def addMHWildsRoughTransparentTintNodes(nodeTree,matInfo,bsdf):
+	#RoughTransparent #80 output: lerp(RoughTransparent_Color * background, lit, alpha) + specular (l.2341-2346, 3361-3365, 7440-7499).
+	#The background read itself (blur by Tranparent_Roughness, refraction, depth fade) needs scene colour and is not reproduced:
+	#a transparent BSDF tinted by RoughTransparent_Color stands in for it. Specular is weighted by alpha here, unlike the game.
+	#The colour also gets Albedo/1024 (negligible) and a runtime stain term, both left out.
+	props = matInfo["mPropDict"]
+	if matInfo["gameName"] != "MHWILDS" or "RoughTransparent_Color" not in props or "roughtransparent" not in matInfo["mmtrName"]:
+		return None
+	alphaInput = bsdf.inputs["Alpha"]
+	transparent = nodeTree.nodes.new("ShaderNodeBsdfTransparent")
+	transparent.name = "MHWilds RoughTransparent Tint"
+	linkMHWildsProp(nodeTree,matInfo,"RoughTransparent_Color",transparent.inputs["Color"],output = "Color")
+	mix = nodeTree.nodes.new("ShaderNodeMixShader")
+	if alphaInput.is_linked:
+		source = alphaInput.links[0].from_socket
+		nodeTree.links.remove(alphaInput.links[0])
+		nodeTree.links.new(source,mix.inputs["Fac"])
+	else:
+		mix.inputs["Fac"].default_value = alphaInput.default_value
+	alphaInput.default_value = 1.0
+	nodeTree.links.new(transparent.outputs["BSDF"],mix.inputs[1])
+	nodeTree.links.new(matInfo["currentShaderOutput"],mix.inputs[2])
+	matInfo["currentShaderOutput"] = mix.outputs["Shader"]
+	return mix
+
+def getMHWildsAntiTranslucentNodeGroup():
+	#Use_AntiTranslucent_Diffuse != 0 (hair #64, Equip #61, VFXwe #61, VFX_Hair #59, MultiBlend #61; identical):
+	#albedo' = albedo + (albedo / (0.78 - 0.23*roughness) - albedo) * trans, on the final albedo and roughness.
+	#trans = 2*dither*lerp(T, T*(1-|N'.V|)^RimTrasnlucent_Power, Use_RimTranslucent), T = TranslucentParam*ATOS.G,
+	#N' = normalize(lerp(geometry normal, shading normal, RimTranslucent_NormalBlend)); the dither averages 0.5, so 2*dither -> 1.
+	name = "MHWildsAntiTranslucent_v1"
+	group = bpy.data.node_groups.get(name)
+	if group != None:
+		return group
+	group = bpy.data.node_groups.new(name,"ShaderNodeTree")
+	newGroupSockets(group,[("Albedo","NodeSocketColor"),("Roughness","NodeSocketFloat"),("Shading Normal","NodeSocketVector"),("ATOS G","NodeSocketFloat"),
+		("TranslucentParam","NodeSocketFloat"),("Use_RimTranslucent","NodeSocketFloat"),("RimTranslucent_NormalBlend","NodeSocketFloat"),
+		("RimTrasnlucent_Power","NodeSocketFloat"),("Use_AntiTranslucent_Diffuse","NodeSocketFloat")],"INPUT")
+	newGroupSockets(group,[("Albedo","NodeSocketColor")],"OUTPUT")
+	b = ShaderGroupBuilder(group)
+	i = b.nodes.new("NodeGroupInput").outputs
+	geometry = b.nodes.new("ShaderNodeNewGeometry")
+	def vec(operation,x,y = None,scale = None):
+		node = b.nodes.new("ShaderNodeVectorMath");node.operation = operation
+		b._set(node.inputs[0],x)
+		if y != None:b._set(node.inputs[1],y)
+		if scale != None:b._set(node.inputs["Scale"],scale)
+		return node.outputs["Value" if operation == "DOT_PRODUCT" else "Vector"]
+	n = geometry.outputs["Normal"]
+	blended = vec("NORMALIZE",vec("ADD",n,vec("SCALE",vec("SUBTRACT",i["Shading Normal"],n),scale = i["RimTranslucent_NormalBlend"])))
+	t = b.math("MULTIPLY",i["TranslucentParam"],i["ATOS G"])
+	rim = b.math("MULTIPLY",t,b.math("POWER",b.math("SUBTRACT",1.0,b.math("ABSOLUTE",vec("DOT_PRODUCT",blended,geometry.outputs["Incoming"]))),i["RimTrasnlucent_Power"]))
+	trans = b.lerp(t,rim,i["Use_RimTranslucent"])
+	divisor = b.math("MULTIPLY_ADD",i["Roughness"],-0.23,0.78)
+	on = b.math("SUBTRACT",1.0,b.math("COMPARE",i["Use_AntiTranslucent_Diffuse"],0.0,0.0))
+	albedo = b.separate(i["Albedo"])
+	channels = []
+	for c in ("Red","Green","Blue"):
+		boosted = b.math("MULTIPLY_ADD",b.math("SUBTRACT",b.math("DIVIDE",albedo[c],divisor),albedo[c]),trans,albedo[c])
+		channels.append(b.select(on,boosted,albedo[c]))
+	out = b.nodes.new("NodeGroupOutput")
+	b.links.new(b.combineColor(*channels),out.inputs["Albedo"])
+	return group
+
+def addMHWildsAntiTranslucentNodes(nodeTree,matInfo,bsdf):
+	props = matInfo["mPropDict"]
+	albedo,roughness = matInfo["albedoNodeLayerGroup"],matInfo["roughnessNodeLayerGroup"]
+	if matInfo["gameName"] != "MHWILDS" or "Use_AntiTranslucent_Diffuse" not in props or albedo.currentOutSocket == None:
+		return None
+	if not hasLoadedImage(matInfo,"AlphaTranslucentOcclusionSSSMap"):
+		return None
+	node = nodeTree.nodes.new("ShaderNodeGroup")
+	node.node_tree = getMHWildsAntiTranslucentNodeGroup()
+	node.name = "MHWilds AntiTranslucent Diffuse"
+	links = nodeTree.links
+	links.new(albedo.currentOutSocket,node.inputs["Albedo"])
+	if roughness.currentOutSocket != None:
+		links.new(roughness.currentOutSocket,node.inputs["Roughness"])
+	else:
+		node.inputs["Roughness"].default_value = bsdf.inputs["Roughness"].default_value
+	if bsdf.inputs["Normal"].is_linked:
+		links.new(bsdf.inputs["Normal"].links[0].from_socket,node.inputs["Shading Normal"])
+	else:
+		links.new(nodeTree.nodes.new("ShaderNodeNewGeometry").outputs["Normal"],node.inputs["Shading Normal"])
+	atos = matInfo["textureNodeDict"]["AlphaTranslucentOcclusionSSSMap"]
+	separate = nodeTree.nodes.new("ShaderNodeSeparateColor")
+	links.new(atos.outputs["Color"],separate.inputs["Color"])
+	links.new(separate.outputs["Green"],node.inputs["ATOS G"])
+	for name,default in (("TranslucentParam",0.0),("Use_RimTranslucent",0.0),("RimTranslucent_NormalBlend",0.0),("RimTrasnlucent_Power",1.0),("Use_AntiTranslucent_Diffuse",0.0)):
+		linkMHWildsProp(nodeTree,matInfo,name,node.inputs[name],default)
+	albedo.currentOutSocket = node.outputs["Albedo"]
+	return node
+
 def getMHWildsParallaxEmitUVNodeGroup(nodeTree):
 	#ParallaxEmit UV, VFXwe PS #63 %412..%443: Tp = cross(n, B), Bp = cross(n, Tp), h = -ParallaxEmit_Height (the per frame dither around it averages out)
 	#uv = (uv0.x + h*dot(I,Tp), uv0.y - h*dot(I,Bp)) in D3D space with I = camera to surface, so Blender V gets + h*dot(I,Bp)
@@ -2385,33 +2645,58 @@ def addMHWildsEmissiveNodes(nodeTree,matInfo):
 	emissiveColor = emissiveNode.outputs["Color"]
 	emissiveAlpha = emissiveNode.outputs["Alpha"]
 	if vectorEmitNode != None and value("UseParallaxEmit") > 0.0 and "UVMap1Node" in nodes and emissiveNode.bl_idname == "ShaderNodeTexImage":
-		parallaxUVNode = getMHWildsParallaxEmitUVNodeGroup(nodeTree)
-		parallaxUVNode.location = location
-		links.new(nodes["UVMap1Node"].outputs["UV"],parallaxUVNode.inputs["UV"])
-		links.new(vectorEmitNode.outputs["Direction"],parallaxUVNode.inputs["Direction"])
-		links.new(vectorEmitNode.outputs["Bitangent"],parallaxUVNode.inputs["Bitangent"])
-		linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Height",parallaxUVNode.inputs["ParallaxEmit_Height"],0.0)
-		parallaxNode = nodes.new("ShaderNodeTexImage")
-		parallaxNode.name = "EmissiveMap_Parallax"
-		parallaxNode.label = "EmissiveMap (ParallaxEmit)"
-		parallaxNode.image = emissiveNode.image
-		parallaxNode.location = location + Vector((300,0))
-		links.new(parallaxUVNode.outputs["Vector"],parallaxNode.inputs["Vector"])
 		blendClampNode = nodes.new("ShaderNodeClamp")#Fraction of dithered pixels that take the shifted sample
 		blendClampNode.location = location + Vector((450,200))
 		linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Blend",blendClampNode.inputs["Value"],0.0)
+		#Shifted pixels (dither d <= Blend) use h = Blur*(d - 0.5) - Height (MultiBlend #57 %714..%719, eye #59 same).
+		#TAA averages d, so the shifted sample is the mean over d in [0, Blend]: PARALLAX_BLUR_TAPS midpoint taps.
+		taps = PARALLAX_BLUR_TAPS if "ParallaxEmit_Blur" in props else 1
+		parallaxNodes = []
+		for tap in range(taps):
+			parallaxUVNode = getMHWildsParallaxEmitUVNodeGroup(nodeTree)
+			parallaxUVNode.location = location + Vector((0,-250*tap))
+			links.new(nodes["UVMap1Node"].outputs["UV"],parallaxUVNode.inputs["UV"])
+			links.new(vectorEmitNode.outputs["Direction"],parallaxUVNode.inputs["Direction"])
+			links.new(vectorEmitNode.outputs["Bitangent"],parallaxUVNode.inputs["Bitangent"])
+			if taps == 1:
+				linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Height",parallaxUVNode.inputs["ParallaxEmit_Height"],0.0)
+			else:
+				#The UV group applies h = -height, so height = Height - Blur*(d - 0.5) with d = Blend*(tap + 0.5)/taps
+				d = nodes.new("ShaderNodeMath");d.operation = "MULTIPLY";d.inputs[1].default_value = (tap+0.5)/taps
+				links.new(blendClampNode.outputs["Result"],d.inputs[0])
+				jitter = nodes.new("ShaderNodeMath");jitter.operation = "MULTIPLY"
+				centered = nodes.new("ShaderNodeMath");centered.operation = "SUBTRACT";centered.inputs[1].default_value = 0.5
+				links.new(d.outputs["Value"],centered.inputs[0]);links.new(centered.outputs["Value"],jitter.inputs[0])
+				linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Blur",jitter.inputs[1],0.0)
+				height = nodes.new("ShaderNodeMath");height.operation = "SUBTRACT"
+				linkMHWildsProp(nodeTree,matInfo,"ParallaxEmit_Height",height.inputs[0],0.0)
+				links.new(jitter.outputs["Value"],height.inputs[1])
+				links.new(height.outputs["Value"],parallaxUVNode.inputs["ParallaxEmit_Height"])
+			tapNode = nodes.new("ShaderNodeTexImage")
+			tapNode.name = "EmissiveMap_Parallax" if tap == 0 else f"EmissiveMap_Parallax{tap}"
+			tapNode.label = "EmissiveMap (ParallaxEmit)"
+			tapNode.image = emissiveNode.image
+			tapNode.location = location + Vector((300,-250*tap))
+			links.new(parallaxUVNode.outputs["Vector"],tapNode.inputs["Vector"])
+			parallaxNodes.append(tapNode)
+		parallaxColor,parallaxAlpha = parallaxNodes[0].outputs["Color"],parallaxNodes[0].outputs["Alpha"]
+		if taps > 1:
+			colorSum = nodes.new("ShaderNodeGroup");colorSum.node_tree = getAverageNodeGroup(taps);colorSum.location = location + Vector((450,-100))
+			for tap,tapNode in enumerate(parallaxNodes):
+				links.new(tapNode.outputs["Color"],colorSum.inputs[2*tap]);links.new(tapNode.outputs["Alpha"],colorSum.inputs[2*tap+1])
+			parallaxColor,parallaxAlpha = colorSum.outputs["Color"],colorSum.outputs["Alpha"]
 		mixColorNode = nodes.new("ShaderNodeMixRGB")
 		mixColorNode.location = location + Vector((600,0))
 		links.new(blendClampNode.outputs["Result"],mixColorNode.inputs["Fac"])
 		links.new(emissiveNode.outputs["Color"],mixColorNode.inputs["Color1"])
-		links.new(parallaxNode.outputs["Color"],mixColorNode.inputs["Color2"])
+		links.new(parallaxColor,mixColorNode.inputs["Color2"])
 		mixAlphaNode = nodes.new("ShaderNodeMath")
 		mixAlphaNode.operation = "MULTIPLY_ADD"
 		mixAlphaNode.location = location + Vector((600,-200))
 		subNode = nodes.new("ShaderNodeMath")
 		subNode.operation = "SUBTRACT"
 		subNode.location = location + Vector((450,-200))
-		links.new(parallaxNode.outputs["Alpha"],subNode.inputs[0])
+		links.new(parallaxAlpha,subNode.inputs[0])
 		links.new(emissiveNode.outputs["Alpha"],subNode.inputs[1])
 		links.new(subNode.outputs["Value"],mixAlphaNode.inputs[0])
 		links.new(blendClampNode.outputs["Result"],mixAlphaNode.inputs[1])
