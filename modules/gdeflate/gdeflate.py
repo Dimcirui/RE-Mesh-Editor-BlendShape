@@ -5,6 +5,11 @@ from typing import Union, Optional
 from enum import IntEnum
 import platform
 
+def _to_c_array(data):
+    # One buffer copy; (c_uint8 * n)(*data) passes every byte as a Python argument
+    # and took seconds per texture.
+    return (c_uint8 * len(data)).from_buffer_copy(data)
+
 class GDeflateCompressionLevel(IntEnum):
     """
     GDeflate compression levels that map to DirectStorage compression levels.
@@ -154,7 +159,7 @@ class GDeflate:
         Raises:
             GDeflateError: If the size calculation fails
         """
-        input_array = (c_uint8 * len(compressed_data))(*compressed_data)
+        input_array = _to_c_array(compressed_data)
         uncompressed_size = c_uint64(0)
         
         success = self._get_uncompressed_size_func(
@@ -184,11 +189,12 @@ class GDeflate:
         Raises:
             GDeflateError: If decompression fails
         """
-        # Get the uncompressed size first
-        output_size = self.get_uncompressed_size(compressed_data)
-        
-        # Prepare input and output buffers
-        input_array = (c_uint8 * len(compressed_data))(*compressed_data)
+        # Prepare the input buffer once, it is also needed for the size query
+        input_array = _to_c_array(compressed_data)
+        output_size = c_uint64(0)
+        if not self._get_uncompressed_size_func(input_array, c_uint64(len(compressed_data)), byref(output_size)):
+            raise GDeflateError("Failed to get uncompressed size")
+        output_size = output_size.value
         output_array = (c_uint8 * output_size)()
         
         success = self._decompress_func(
@@ -230,7 +236,7 @@ class GDeflate:
         # Allocate input/output buffers and output size var.
         output_size = c_uint64(bounded_output_size)
         output_array = (c_uint8 * bounded_output_size)()
-        input_array = (c_uint8 * len(data))(*data)
+        input_array = _to_c_array(data)
         
         success = self._compress_func(
             output_array,
@@ -245,4 +251,4 @@ class GDeflate:
             raise GDeflateError("Compression failed")
         
         # Return only the actual compressed bytes
-        return bytes(output_array[:output_size.value])
+        return ctypes.string_at(output_array, output_size.value)

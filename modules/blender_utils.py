@@ -127,7 +127,8 @@ def nodes_arrange(nodelist, level, ntree):
 	for node in nodelist:
 		parents.append(node.parent)
 		node.parent = None
-		ntree.nodes.update()
+	#One tree update per level instead of one per node
+	ntree.nodes.update()
 
 
 	#print ("nodes arrange def")
@@ -142,6 +143,12 @@ def nodes_arrange(nodelist, level, ntree):
 	x = 0
 	y = 0
 
+	#Each node.location assignment costs milliseconds in a full scene (~29 s for one Wilds
+	#character), so positions are written for the whole tree with one foreach_set.
+	nodeIndex = {node.as_pointer():i for i, node in enumerate(ntree.nodes)}
+	locations = [0.0] * (2 * len(nodeIndex))
+	ntree.nodes.foreach_get("location", locations)
+
 	for node in nodelist:
 
 		if node.hide:
@@ -150,10 +157,13 @@ def nodes_arrange(nodelist, level, ntree):
 		else:
 			hidey = 0
 
-		node.location.y = y
+		i = 2 * nodeIndex[node.as_pointer()]
+		locations[i + 1] = y
 		y = y - values.margin_y - node.dimensions.y + hidey
 
-		node.location.x = xpos #if node.type != "FRAME" else xpos + 1200
+		locations[i] = xpos #if node.type != "FRAME" else xpos + 1200
+
+	ntree.nodes.foreach_set("location", locations)
 
 	y = y + values.margin_y
 

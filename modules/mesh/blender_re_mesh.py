@@ -921,8 +921,7 @@ def _mhwilds_create_point_int_attribute(meshData, attributeName, values):
 		raise RuntimeError(
 			f"{attributeName} must be a point-domain integer attribute"
 		)
-	for index, value in enumerate(values):
-		attribute.data[index].value = int(value)
+	attribute.data.foreach_set("value", [int(value) for value in values])
 	return True
 
 def _mhwilds_read_point_int_attribute(
