@@ -75,6 +75,7 @@ from .modules.mesh.re_mesh_operators import (
 	draw_static_normals,
 	register_static_normals,
 	unregister_static_normals,
+	snapshotShapeKeyNames,
 
 )
 from .modules.mesh.ui_re_mesh_panels import (
@@ -978,6 +979,8 @@ class ImportREMesh(Operator, ImportHelper):
 				print(f"RE Mesh import failed for {file.name}: {errorMessage}")
 			if success:
 				importedCount += 1
+				# Imported keep-normals rows are keyed by key name: track renames.
+				snapshotShapeKeyNames()
 				options["clearScene"] = False#Disable clear scene after first mesh is imported
 				if multiFileImport and self.mergeImportedArmatures and not mergeArmatureName:
 					# Merge the following files into the armature of the first imported file.

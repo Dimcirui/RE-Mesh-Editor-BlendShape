@@ -12,7 +12,7 @@ from bpy.props import (StringProperty,
                        EnumProperty,
                        )
 from .blender_re_mesh import (solveRepeatedUVs, hasStaticNormals, setStaticNormals,
-	STATIC_NORMALS_PROPERTY, DUMMY_SHAPEKEY_PREFIX)
+	STATIC_NORMALS_PROPERTY, IMPORTED_KEY_NORMALS_PROPERTY, DUMMY_SHAPEKEY_PREFIX)
 from .operation_progress import operation_scope
 from .re_mesh_propertyGroups import (ExporterNodePropertyGroup, MESH_UL_REExporterList,
 	getBatchMeshWeightLimitDefault, getBatchMeshWeightLimit, setBatchMeshWeightLimit)
@@ -120,25 +120,32 @@ _shapeKeyNameSnapshot = {}
 _msgbusOwner = object()
 
 
+# Imported keep-normals rows are keyed the same way and move with it.
+_NAME_KEYED_PROPERTIES = (STATIC_NORMALS_PROPERTY, IMPORTED_KEY_NORMALS_PROPERTY)
+
+
 def snapshotShapeKeyNames():
 	_shapeKeyNameSnapshot.clear()
 	for keys in bpy.data.shape_keys:
-		if keys.get(STATIC_NORMALS_PROPERTY):
+		if any(keys.get(prop) for prop in _NAME_KEYED_PROPERTIES):
 			_shapeKeyNameSnapshot[keys.as_pointer()] = [key.name for key in keys.key_blocks]
 
 
 def migrateRenamedStaticNormals():
 	for keys in bpy.data.shape_keys:
-		flagged = keys.get(STATIC_NORMALS_PROPERTY)
 		old = _shapeKeyNameSnapshot.get(keys.as_pointer())
-		if not flagged or old is None:
+		if old is None:
 			continue
 		new = [key.name for key in keys.key_blocks]
 		oldNames, newNames = set(old), set(new)
-		for oldName, newName in zip(old, new):
-			if oldName != newName and oldName not in newNames and newName not in oldNames and oldName in flagged:
-				flagged[newName] = flagged[oldName]
-				del flagged[oldName]
+		for prop in _NAME_KEYED_PROPERTIES:
+			flagged = keys.get(prop)
+			if not flagged:
+				continue
+			for oldName, newName in zip(old, new):
+				if oldName != newName and oldName not in newNames and newName not in oldNames and oldName in flagged:
+					flagged[newName] = flagged[oldName]
+					del flagged[oldName]
 	snapshotShapeKeyNames()
 
 

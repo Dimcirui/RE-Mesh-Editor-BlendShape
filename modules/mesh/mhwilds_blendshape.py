@@ -190,6 +190,17 @@ def _shape_normals(parsed_submesh, shape_name, base):
 	return normals if len(normals) == len(base) else base
 
 
+def _shape_normal_words(parsed_submesh, shape_name, vertex_count):
+	"""Second rows kept from the imported file for an unedited key (uint32,
+	0 = compute the row), or None."""
+	entry = _shape_entry(parsed_submesh, shape_name)
+	words = None if entry is None else getattr(entry, "normalWords", None)
+	if words is None:
+		return None
+	words = np.asarray(words, dtype=np.uint32).reshape(-1)
+	return words if len(words) == vertex_count else None
+
+
 def _pack_normal_rows(normals):
 	"""int8 xyz words like the Normal element (floor(n * 127)), top byte 0."""
 	normals = np.asarray(normals, dtype=np.float32).reshape((-1, 3))
@@ -368,7 +379,10 @@ def _group_channels(submeshes, with_normals=False):
 				parsed_submesh, name, count
 			)
 		mask = np.any(np.abs(deltas) > EDIT_DELTA_THRESHOLD, axis=1)
-		if not mask.any():
+		# A channel that moves nothing here may still turn normals here (vanilla
+		# ch90_158 stores rows on submeshes the channel does not move), so the
+		# empty test waits for the normal rows.
+		if not mask.any() and not with_normals:
 			continue
 		rows = None
 		if with_normals:
@@ -379,7 +393,19 @@ def _group_channels(submeshes, with_normals=False):
 					parsed_submesh, name, base[start:start + count]
 				)
 			rows = _pack_normal_rows(normals)
+			for parsed_submesh, info, count in submeshes:
+				words = _shape_normal_words(parsed_submesh, name, count)
+				if words is not None:
+					start = int(info.vertexStartIndex) - lo
+					span = rows[start:start + count]
+					span[words != 0] = words[words != 0]
+					# Rows the file stored stay, even at the base normal: the
+					# game lerps towards every stored row, so they also damp
+					# the other active channels there.
+					mask[start:start + count] |= words != 0
 			mask |= valid & (rows != base_rows)
+			if not mask.any():
+				continue
 		channels.append((name, deltas, mask, rows))
 	return lo, valid, channels
 

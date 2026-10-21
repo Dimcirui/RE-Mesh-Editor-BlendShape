@@ -470,6 +470,9 @@ class BlendShape:
 	def __init__(self):
 		self.blendShapeName = "newBlendShape"
 		self.deltas = []
+		# Keep-normals second rows read from the file (uint32 per vertex, 0 where
+		# the channel stores none); None when the body has no second rows.
+		self.normalWords = None
 
 def _parseLODStructureWithoutBlendShapes(
 	reMesh,
@@ -645,11 +648,21 @@ def _parseLODStructureWithBlendShapes(
 			# Wilds no-recalc meshes (normalRecalcOffset == 0) and bodies with
 			# padding1 == 1 store 8 bytes per vertex: [position delta, second row].
 			# vertOffset counts vertices, so keep only the position rows.
+			# The second row is the channel's target normal (int8 xyz, absolute,
+			# not a delta): computeBlendShape lerps the vertex normal towards it
+			# by the channel weight. Kept per channel so an unedited key can
+			# write the same rows back.
+			secondRows = None
 			if not isRE4Float16 and not isMHRSB and (
 				int(getattr(reMesh.fileHeader, "normalRecalcOffset", 0) or 0) == 0
 				or int(getattr(blendData, "padding1", 0) or 0) == 1
 			):
 				decoded = decoded[0::2]
+				if not is888:
+					usableSize = (len(buffer) // 8) * 8
+					secondRows = np.frombuffer(
+						buffer[:usableSize], dtype="<u4"
+					)[1::2]
 			activeCount = min(
 				int(getattr(blendData, "targetCount", 0) or 0),
 				len(targets),
@@ -729,7 +742,10 @@ def _parseLODStructureWithBlendShapes(
 					)
 					subRanges.append((groupIndex, start, end))
 			shapeAccum = {}
-			def scatterDeltas(groupHint, shapeName, vertexStart, deltas):
+			# Second rows per submesh and channel; 0 (a zero normal, never a
+			# real row) marks vertices the channel stores no row for.
+			normalWordAccum = {}
+			def scatterDeltas(groupHint, shapeName, vertexStart, deltas, words=None):
 				done = 0
 				total = len(deltas)
 				while done < total:
@@ -755,6 +771,13 @@ def _parseLODStructureWithBlendShapes(
 						full = np.zeros((end - start, 3), dtype=np.float32)
 						channels[shapeName] = full
 					full[vertex - start:vertex - start + take] = deltas[done:done + take]
+					if words is not None:
+						wordChannels = normalWordAccum.setdefault((groupIndex, start), {})
+						fullWords = wordChannels.get(shapeName)
+						if fullWords is None:
+							fullWords = np.zeros(end - start, dtype=np.uint32)
+							wordChannels[shapeName] = fullWords
+						fullWords[vertex - start:vertex - start + take] = words[done:done + take]
 					done += take
 
 			if isMHRSB:
@@ -848,6 +871,8 @@ def _parseLODStructureWithBlendShapes(
 								shapeName,
 								int(entry.subMeshVertexStartIndex),
 								deltas,
+								None if secondRows is None
+								else secondRows[start:start + count],
 							)
 							running += count
 					else:
@@ -862,6 +887,8 @@ def _parseLODStructureWithBlendShapes(
 								blendData.typing,
 								useSymmetricScale,
 							),
+							None if secondRows is None
+							else secondRows[start:start + targetRowCount],
 						)
 				payloadCursor += targetRowCount * channelCount
 			for key, channels in shapeAccum.items():
@@ -869,6 +896,7 @@ def _parseLODStructureWithBlendShapes(
 					shape = BlendShape()
 					shape.blendShapeName = shapeName
 					shape.deltas = full
+					shape.normalWords = normalWordAccum.get(key, {}).get(shapeName)
 					blendShapeDict.setdefault(key, []).append(shape)
 
 		lod = LODLevel()

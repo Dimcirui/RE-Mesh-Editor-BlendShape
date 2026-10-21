@@ -34,6 +34,7 @@ from ..gen_functions import splitNativesPath,raiseWarning
 from ..blender_utils import showErrorMessageBox,showMessageBox
 from ..hashing.mmh3.pymmh3 import hashUTF8
 import time
+import zlib
 import numpy as np																																																																												
 timeFormat = "%d"
 rotateNeg90Matrix = Matrix.Rotation(radians(-90.0), 4, 'X')
@@ -206,6 +207,61 @@ def setStaticNormals(meshData, keyName, static):
 	elif keyName in flagged:
 		del flagged[keyName]
 	return True
+
+
+# Keep-normals second rows read on import, per key: the packed target normal
+# of every vertex (0 where the file stores none) and a fingerprint of the
+# basis and key coordinates at import. Keep Normals export writes these rows
+# back for a key whose fingerprint still matches; an edited key, or a Static
+# Normals key, gets computed rows. Keyed by Blender key name like
+# RE_StaticNormals, and carried over renames the same way.
+IMPORTED_KEY_NORMALS_PROPERTY = "RE_ImportedKeyNormals"
+
+
+def _shape_key_fingerprint(meshData, shapeKey):
+	keys = meshData.shape_keys
+	count = len(meshData.vertices)
+	crc = 0
+	for block in (keys.reference_key, shapeKey):
+		coordinates = np.empty(count * 3, dtype=np.float32)
+		block.data.foreach_get("co", coordinates)
+		crc = zlib.crc32(coordinates.tobytes(), crc)
+	# IDProperty ints are signed 32-bit.
+	return crc - (1 << 32) if crc >= (1 << 31) else crc
+
+
+def storeImportedKeyNormals(meshData, wordsByKeyName):
+	keys = meshData.shape_keys
+	count = len(meshData.vertices)
+	stored = {}
+	for keyName, words in wordsByKeyName.items():
+		shapeKey = keys.key_blocks.get(keyName)
+		words = np.asarray(words, dtype=np.uint32)
+		if shapeKey is None or len(words) != count or not words.any():
+			continue
+		stored[keyName] = {
+			"words": words.view(np.int32).tolist(),
+			"fingerprint": _shape_key_fingerprint(meshData, shapeKey),
+		}
+	if stored:
+		keys[IMPORTED_KEY_NORMALS_PROPERTY] = stored
+
+
+def importedKeyNormalWords(meshData, shapeKey):
+	"""The key's imported second rows (uint32, 0 = none), or None when the key
+	has none or its basis or coordinates changed since import."""
+	keys = meshData.shape_keys
+	stored = keys.get(IMPORTED_KEY_NORMALS_PROPERTY) if keys is not None else None
+	entry = stored.get(shapeKey.name) if stored is not None else None
+	if entry is None:
+		return None
+	words = np.asarray(entry["words"], dtype=np.int64).astype(np.uint32)
+	if (
+		len(words) != len(meshData.vertices)
+		or int(entry["fingerprint"]) != _shape_key_fingerprint(meshData, shapeKey)
+	):
+		return None
+	return words
 
 
 def _mute_shape_key_drivers(obj):
@@ -532,6 +588,17 @@ def _build_blend_shape_entries_for_export(
 				baseNormals,
 			)
 			hasCorner = rowCorners >= 0
+		# Imported second rows index the object's own vertices and assume its
+		# vanilla basis: not with modifiers changing the vertex set, and not
+		# with locked keys baked into the exported basis.
+		useImportedNormals = (
+			wantNormals
+			and len(evaluatedBasisMesh.vertices) == len(rawsubmesh.data.vertices)
+			and not any(
+				_is_baked_shape_key(key)
+				for key in rawsubmesh.data.shape_keys.key_blocks
+			)
+		)
 		for shapeKey in shapeKeys:
 			for key in rawsubmesh.data.shape_keys.key_blocks:
 				if key.name != "Basis" and not _is_baked_shape_key(key):
@@ -598,6 +665,14 @@ def _build_blend_shape_entries_for_export(
 			entry.blendShapeName = _export_shape_key_name(rawsubmesh.data, shapeKey)
 			entry.deltas = np.asarray(deltas, dtype=np.float32)
 			entry.normals = shapeNormals
+			if useImportedNormals and not hasStaticNormals(rawsubmesh.data, shapeKey):
+				words = importedKeyNormalWords(rawsubmesh.data, shapeKey)
+				if words is not None:
+					entry.normalWords = np.array([
+						words[int(sourceIndex)]
+						if 0 <= int(sourceIndex) < len(words) else 0
+						for sourceIndex in sourceVertexIndexList
+					], dtype=np.uint32)
 			result.append(entry)
 	finally:
 		if "rawBasisMesh" in locals():
@@ -1055,6 +1130,7 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		skB.value = 0.0
 		
 		fullNames = {}
+		importedNormals = {}
 		for blendShapeEntry in blendShapeList:
 			name = blendShapeEntry.blendShapeName
 			deltas = [Vector(val) for val in blendShapeEntry.deltas]
@@ -1074,8 +1150,13 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 				if rotate90:
 					delta = rotate90Matrix.to_3x3() @ delta
 				sk.data[i].co = meshObj.data.vertices[i].co + delta
+			words = getattr(blendShapeEntry, "normalWords", None)
+			if words is not None:
+				importedNormals[sk.name] = words
 		if fullNames:
 			meshObj.data.shape_keys[SHAPE_KEY_FULL_NAMES_PROPERTY] = fullNames
+		if importedNormals:
+			storeImportedKeyNormals(meshObj.data, importedNormals)
 	
 	return meshObj
 

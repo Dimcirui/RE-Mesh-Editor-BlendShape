@@ -59,6 +59,11 @@ feature list, documentation and credits.
 
   Saved on the shape keys as `RE_StaticNormals` by key name; renaming a key in the UI keeps its
   flag. Off by default.
+- Keep-normals meshes (8-byte rows, e.g. MH Wilds Seikret) store each channel's target normal
+  next to its position delta. Import keeps these rows per key (`RE_ImportedKeyNormals`), and a
+  *Keep Normals* export writes them back unchanged for every key whose coordinates and basis are
+  still as imported, so unedited keys keep their vanilla shading. An edited key, a Static Normals
+  key, a mesh with locked keys or modifiers that change the vertex count use the computed normals.
 
 **Other changes**
 
