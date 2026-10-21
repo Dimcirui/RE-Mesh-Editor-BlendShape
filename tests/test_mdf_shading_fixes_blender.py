@@ -86,6 +86,23 @@ try:
             got=render(engine)
             check(f'{engine} UV_Tile {c["name"]} (D3D V)',np.abs(got[:2]-want[:2]).max()<tol,{'got':got.round(5).tolist(),'want':want.round(5).tolist()})
 
+    #Backface culling: back faces turn transparent only while the material checkbox is on (Cycles has no culling of its own)
+    cull=bpy.data.materials.new('cull');cull.use_nodes=True;cnt=cull.node_tree;cnt.nodes.clear()
+    cout=cnt.nodes.new('ShaderNodeOutputMaterial');cemit=cnt.nodes.new('ShaderNodeEmission');cemit.inputs['Color'].default_value=(.8,.1,.1,1)
+    cnt.links.new(nodes.addBackfaceCullingNodes(cnt,cull,cemit.outputs[0]),cout.inputs['Surface'])
+    plane.data.materials[0]=cull;scene.render.film_transparent=True
+    def renderRGBA(engine):
+        scene.frame_set(scene.frame_current);scene.render.engine=engine;scene.render.filepath=str(root/'c.exr');bpy.ops.render.render(write_still=True)
+        im=bpy.data.images.load(scene.render.filepath,check_existing=False);v=np.array(im.pixels[:]).reshape(8,8,4)[4,4].copy();bpy.data.images.remove(im);return v
+    try:
+        for engine in ('CYCLES','BLENDER_EEVEE'):
+            for flipped,culling,visible in ((True,False,True),(True,True,False),(False,True,True)):
+                plane.rotation_euler[0]=np.pi if flipped else 0.0;cull.use_backface_culling=culling
+                got=renderRGBA(engine);ok=(abs(got[3]-1)<1e-3 and abs(got[0]-.8)<4e-3) if visible else got[3]<1e-3
+                check(f'{engine} {"back" if flipped else "front"} face with culling {"on" if culling else "off"} is {"visible" if visible else "hidden"}',ok,got.round(4).tolist())
+    finally:
+        plane.rotation_euler[0]=0.0;plane.data.materials[0]=mat;scene.render.film_transparent=False
+
     #Importer wiring
     good=bpy.data.images.new('good',1,1,alpha=True);good.generated_color=(.5,.5,.5,1)
     names=('Texconv','unload_texconv','getTexPath','loadTex','getChunkPathList');saved={n:getattr(main,n) for n in names}
@@ -151,6 +168,10 @@ try:
         node=t.nodes.get('MHWilds AntiTranslucent Diffuse');bsdf=next(n for n in t.nodes if n.bl_idname=='ShaderNodeBsdfPrincipled')
         check('Use_AntiTranslucent_Diffuse adjusts the albedo that reaches the BSDF',node is not None and reaches(bsdf.inputs['Base Color'],node) and source(node.inputs['TranslucentParam']).name=='TranslucentParam')
         check('AntiTranslucent reads the shading normal and roughness',node.inputs['Shading Normal'].is_linked and node.inputs['Roughness'].is_linked)
+        out=next(n for n in t.nodes if n.bl_idname=='ShaderNodeOutputMaterial');material=bpy.data.materials['Anti']
+        drivers=[d for d in (t.animation_data.drivers if t.animation_data else []) if d.data_path=='nodes["Backface Culling"].inputs[1].default_value']
+        target=drivers[0].driver.variables[0].targets[0] if drivers else None
+        check('the surface goes through the backface culling mix, driven by the material checkbox',source(out.inputs['Surface']).name=='Backface Culling Mix' and target is not None and target.id==material and target.data_path=='use_backface_culling')
     finally:
         for n,v in saved.items():setattr(main,n,v)
 finally:

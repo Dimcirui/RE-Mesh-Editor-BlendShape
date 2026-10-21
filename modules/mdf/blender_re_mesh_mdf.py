@@ -2036,6 +2036,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 							nodeTree.links.remove(link)
 						else:
 							links.new(linkSource,link.to_socket)
+				from .blender_nodes_re_mdf import addBackfaceCullingNodes
+				matInfo["currentShaderOutput"] = addBackfaceCullingNodes(nodeTree,blenderMaterial,matInfo["currentShaderOutput"])
 				links.new(matInfo["currentShaderOutput"],nodeMaterialOutput.inputs["Surface"])
 				if arrangeNodes:
 					#TODO Force blender to update node dimensions so that a large margin doesn't need to be used as a workaround

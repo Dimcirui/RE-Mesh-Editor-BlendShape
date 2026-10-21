@@ -2402,6 +2402,37 @@ def addMHWildsUVTileNodes(nodeTree,matInfo):
 			nodeTree.links.new(node.outputs["UV"],image.inputs["Vector"])
 	return node
 
+def addBackfaceCullingNodes(nodeTree,blenderMaterial,shaderOutput):
+	#Cycles ignores Backface Culling, so back faces are mixed to a transparent BSDF instead.
+	#The factor follows the material's Backface Culling checkbox through a driver, so toggling it works in both engines.
+	#Needed by inverted hull outlines (normals facing inward), which render as a solid black shell without culling.
+	nodes = nodeTree.nodes
+	geometry = nodes.new("ShaderNodeNewGeometry")
+	geometry.name = "Backface Culling Geometry"
+	factor = nodes.new("ShaderNodeMath")
+	factor.name = "Backface Culling"
+	factor.label = "Backface Culling (follows material setting)"
+	factor.operation = "MULTIPLY"
+	nodeTree.links.new(geometry.outputs["Backfacing"],factor.inputs[0])
+	factor.inputs[1].default_value = float(blenderMaterial.use_backface_culling)
+	try:
+		driver = factor.inputs[1].driver_add("default_value").driver
+		driver.type = "AVERAGE"
+		variable = driver.variables.new()
+		variable.type = "SINGLE_PROP"
+		variable.targets[0].id_type = "MATERIAL"
+		variable.targets[0].id = blenderMaterial
+		variable.targets[0].data_path = "use_backface_culling"
+	except Exception as err:
+		print(f"Unable to drive backface culling on {blenderMaterial.name}: {err}")
+	transparent = nodes.new("ShaderNodeBsdfTransparent")
+	mix = nodes.new("ShaderNodeMixShader")
+	mix.name = "Backface Culling Mix"
+	nodeTree.links.new(factor.outputs["Value"],mix.inputs["Fac"])
+	nodeTree.links.new(shaderOutput,mix.inputs[1])
+	nodeTree.links.new(transparent.outputs["BSDF"],mix.inputs[2])
+	return mix.outputs["Shader"]
+
 def addMHWildsRoughTransparentTintNodes(nodeTree,matInfo,bsdf):
 	#RoughTransparent #80 output: lerp(RoughTransparent_Color * background, lit, alpha) + specular (l.2341-2346, 3361-3365, 7440-7499).
 	#The background read itself (blur by Tranparent_Roughness, refraction, depth fade) needs scene colour and is not reproduced:
