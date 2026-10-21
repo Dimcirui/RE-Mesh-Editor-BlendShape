@@ -172,6 +172,23 @@ try:
         drivers=[d for d in (t.animation_data.drivers if t.animation_data else []) if d.data_path=='nodes["Backface Culling"].inputs[1].default_value']
         target=drivers[0].driver.variables[0].targets[0] if drivers else None
         check('the surface goes through the backface culling mix, driven by the material checkbox',source(out.inputs['Surface']).name=='Backface Culling Mix' and target is not None and target.id==material and target.data_path=='use_backface_culling')
+        #Inverted hull outlines get culling even with the import option off; ordinary and concave meshes do not
+        hullCol=bpy.data.collections.new('hull');scene.collection.children.link(hullCol)
+        def shape(name,radius,flip=False,hemisphere=False):
+            bpy.ops.mesh.primitive_uv_sphere_add(radius=radius,segments=24,ring_count=12);o=bpy.context.object
+            for c in o.users_collection:c.objects.unlink(o)
+            hullCol.objects.link(o);o.name=name
+            if hemisphere:
+                import bmesh;bm=bmesh.new();bm.from_mesh(o.data);bmesh.ops.delete(bm,geom=[f for f in bm.faces if f.calc_center_median().z>0],context='FACES');bm.to_mesh(o.data);bm.free()
+            if flip:o.data.flip_normals()
+            o.data.materials.append(bpy.data.materials.new(name));return o
+        skin,hull,cup=shape('HullSkin',1.0),shape('HullShell',1.02,flip=True),shape('HullCup',.5,flip=True,hemisphere=True)
+        cup.location=(5,0,0);bpy.context.view_layer.update()
+        f=mdf.MDFFile();f.fileVersion=45;f.materialList=[entry(n,'Base_ATOS_Emit_FX_Detail_RT_VFX.mmtr',{},('BaseDielectricMap','NormalRoughnessOcclusionMap')) for n in ('HullSkin','HullShell','HullCup')]
+        main.importMDF(f,{n:bpy.data.materials[n] for n in ('HullSkin','HullShell','HullCup')},False,False,False,False,chunkPath='',gameName='MHWILDS')
+        culled={n:bpy.data.materials[n].use_backface_culling for n in ('HullSkin','HullShell','HullCup')}
+        check('an inverted hull outline gets backface culling with the option off',culled['HullShell'],culled)
+        check('the surface under the hull and a lone inward-facing cup keep culling off',not culled['HullSkin'] and not culled['HullCup'],culled)
     finally:
         for n,v in saved.items():setattr(main,n,v)
 finally:

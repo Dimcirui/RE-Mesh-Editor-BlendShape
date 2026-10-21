@@ -528,6 +528,74 @@ def buildMissingTextureMaterial(blenderMaterial,missingTextures):
 	blenderMaterial["re_mdf_preview_missing_textures"] = json.dumps(missingTextures,ensure_ascii=False)
 	raiseWarning(f"Material {blenderMaterial.name}: using a neutral preview because {len(missingTextures)} required texture binding(s) could not be loaded. See re_mdf_preview_missing_textures on the material for paths.")
 
+INVERTED_HULL_PREFILTER = 0.5#Max share of faces pointing away from the mesh center
+INVERTED_HULL_SAMPLES = 200
+INVERTED_HULL_MATCH = 0.6#Min share of sampled faces lying just outside another surface and facing against it
+INVERTED_HULL_GAP = 0.05#Max hull offset, relative to the hull's bounding box diagonal
+
+def isInvertedHull(obj,treeCache):
+	#Inverted hull outline: a slightly inflated copy of a surface with its faces flipped. The game culls back faces,
+	#so only the silhouette rim shows; without culling the shell covers the surface it outlines.
+	import numpy as np
+	from mathutils.bvhtree import BVHTree
+	mesh = obj.data
+	count = len(mesh.polygons)
+	if count < 16:
+		return False
+	normals = np.empty(count*3,np.float32)
+	centers = np.empty(count*3,np.float32)
+	mesh.polygons.foreach_get("normal",normals)
+	mesh.polygons.foreach_get("center",centers)
+	normals,centers = normals.reshape(-1,3),centers.reshape(-1,3)
+	#Cheap filter first: a hull around a mostly convex surface has most faces pointing inward
+	if (((centers - centers.mean(0))*normals).sum(1) > 0).mean() > INVERTED_HULL_PREFILTER:
+		return False
+	others = [other for collection in obj.users_collection for other in collection.objects if other.type == "MESH" and other != obj]
+	if not others:
+		return False
+	#Rest-pose trees in each object's local space; deform=False skips the armature
+	depsgraph = bpy.context.evaluated_depsgraph_get()
+	targets = []
+	for other in others:
+		if other not in treeCache:
+			treeCache[other] = BVHTree.FromObject(other,depsgraph,deform = False)
+		world = other.matrix_world
+		targets.append((treeCache[other],world,world.inverted_safe(),world.to_3x3().inverted_safe().transposed()))
+	matrix = obj.matrix_world
+	normalMatrix = matrix.to_3x3().inverted_safe().transposed()
+	corners = np.array([tuple(matrix @ Vector(corner)) for corner in obj.bound_box])
+	gap = INVERTED_HULL_GAP*float(np.linalg.norm(np.ptp(corners,0)))
+	step = max(1,count//INVERTED_HULL_SAMPLES)
+	matches = samples = 0
+	for index in range(0,count,step):
+		center = matrix @ Vector(centers[index])
+		normal = (normalMatrix @ Vector(normals[index])).normalized()
+		samples += 1
+		best = None
+		for tree,world,inverse,worldNormal in targets:
+			location,surfaceNormal,_,_ = tree.find_nearest(inverse @ center)
+			if location == None:
+				continue
+			location = world @ location
+			distance = (center - location).length
+			if distance <= gap and (best == None or distance < best[0]):
+				best = (distance,location,(worldNormal @ surfaceNormal).normalized())
+		if best != None and normal.dot(best[2]) < -0.5 and (center - best[1]).dot(best[2]) >= 0.0:
+			matches += 1
+	return samples > 0 and matches/samples >= INVERTED_HULL_MATCH
+
+def findInvertedHullMaterials(meshMaterialDict):
+	materials = set(meshMaterialDict.values())
+	found = set()
+	treeCache = {}
+	for obj in bpy.data.objects:
+		if obj.type != "MESH":
+			continue
+		used = {slot.material for slot in obj.material_slots} & materials
+		if used - found and isInvertedHull(obj,treeCache):
+			found.update(used)
+	return found
+
 def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBackfaceCulling,reloadCachedTextures,chunkPath = "",gameName = None,arrangeNodes = False):
 	TEXTURE_CACHE_DIR = bpy.context.preferences.addons[ADDON_NAME].preferences.textureCachePath
 	USE_DDS = bpy.context.preferences.addons[ADDON_NAME].preferences.useDDS == True and bpy.app.version >= (4,2,0)
@@ -552,6 +620,8 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 			addChunkPath(chunkPath,gameName)
 	#print(chunkPathList)
 	texConv = Texconv()
+	#Outline shells need culling to look right, so they get it even with the culling option off
+	invertedHullMaterials = findInvertedHullMaterials(meshMaterialDict)
 
 	for materialName in meshMaterialDict.keys():
 		#print(materialName)
@@ -784,7 +854,7 @@ def importMDF(mdfFile,meshMaterialDict,loadUnusedTextures,loadUnusedProps,useBac
 			UVMap2Node.location = (-800,600)
 			UVMap2Node.uv_map = "UVMap1"
 			
-			blenderMaterial.use_backface_culling = useBackfaceCulling and not (matInfo["flags"].BaseTwoSideEnable == 1 or matInfo["flags"].TwoSideEnable == 1)
+			blenderMaterial.use_backface_culling = (useBackfaceCulling or blenderMaterial in invertedHullMaterials) and not (matInfo["flags"].BaseTwoSideEnable == 1 or matInfo["flags"].TwoSideEnable == 1)
 			
 			arrayImageNodeList = []
 			
