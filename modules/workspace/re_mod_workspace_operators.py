@@ -659,7 +659,12 @@ class WM_OT_ConvertToREEngine(Operator):
 				mdfCollection = getCollection(self.mdfCollectionName,parentCollection)
 				bpy.context.scene.re_mdf_toolpanel.mdfCollection = mdfCollection
 				print("Created new mdf collection.")
-			
+			#getCollection makes plain collections, so tag newly created ones with their type
+			if "~TYPE" not in meshCollection:
+				meshCollection["~TYPE"] = "RE_MESH_COLLECTION"
+			if "~TYPE" not in mdfCollection:
+				mdfCollection["~TYPE"] = "RE_MDF_COLLECTION"
+
 			if self.moveCollectionObjects:
 				#Remove objects from existing collections
 				removedMeshesCollection = getCollection("Removed Meshes")

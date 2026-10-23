@@ -22,7 +22,8 @@ def importFBXSkelFile(filePath):
 	fileName = os.path.splitext(os.path.split(filePath)[1])[0]
 	armatureData = bpy.data.armatures.new(fileName)	
 	armatureObj = bpy.data.objects.new(fileName, armatureData)
-	
+	armatureObj["~TYPE"] = "RE_FBXSKEL_ARMATURE"
+
 	try:
 		split = splitNativesPath(filePath)
 		if split != None:
