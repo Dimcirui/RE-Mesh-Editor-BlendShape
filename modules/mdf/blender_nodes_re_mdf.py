@@ -2100,6 +2100,58 @@ def addMHWildsFixedAlphaNodes(nodeTree,matInfo):
 	matInfo["alphaSocket"] = doubleNode.outputs["Value"]
 
 MHWILDS_TIME_GROUP = "MHWildsTime"
+MHWILDS_TIME_PROP = "mhwilds_seconds"
+
+def bindMHWildsTimeToScene(scene):
+	#The frame driver lives on a scene custom property, the group reads it with a View Layer Attribute node.
+	#A frame driver inside the node tree tags the group every frame and EEVEE rebuilds every material using it (~400 ms/frame on a 24 material character)
+	try:
+		if MHWILDS_TIME_PROP not in scene.keys():
+			scene[MHWILDS_TIME_PROP] = 0.0
+		fcurve = scene.driver_add(f'["{MHWILDS_TIME_PROP}"]')
+		driver = fcurve.driver
+		driver.type = "SCRIPTED"
+		for variable in list(driver.variables):
+			driver.variables.remove(variable)
+		for name,path in (("fps","render.fps"),("fps_base","render.fps_base"),("start","frame_start")):
+			variable = driver.variables.new()
+			variable.name = name
+			variable.type = "SINGLE_PROP"
+			variable.targets[0].id_type = "SCENE"
+			variable.targets[0].id = scene
+			variable.targets[0].data_path = path
+		#Simple expression, runs without Python auto run
+		driver.expression = "(frame - start) * fps_base / fps"
+	except Exception as err:
+		print(f"Unable to create the material animation driver: {err}")
+		return False
+	return True
+
+def upgradeMHWildsTimeNodeGroup(nodeGroup):
+	#Older files drove a Value node inside the group, swap it for the attribute reader
+	secondsNode = nodeGroup.nodes.get("Seconds")
+	if secondsNode is not None and secondsNode.type == "ATTRIBUTE":
+		return
+	location = (0,0)
+	targets = []
+	if secondsNode is not None:
+		location = secondsNode.location.copy()
+		targets = [link.to_socket for link in nodeGroup.links if link.from_node == secondsNode]
+		nodeGroup.nodes.remove(secondsNode)
+	if nodeGroup.animation_data is not None:
+		for fcurve in list(nodeGroup.animation_data.drivers):
+			if fcurve.data_path.startswith('nodes["Seconds"]'):
+				nodeGroup.animation_data.drivers.remove(fcurve)
+		if not nodeGroup.animation_data.drivers and nodeGroup.animation_data.action is None:
+			nodeGroup.animation_data_clear()
+	secondsNode = nodeGroup.nodes.new("ShaderNodeAttribute")
+	secondsNode.name = "Seconds"
+	secondsNode.label = "Seconds (scene property, driven by frame)"
+	secondsNode.attribute_type = "VIEW_LAYER"
+	secondsNode.attribute_name = MHWILDS_TIME_PROP
+	secondsNode.location = location
+	for socket in targets:
+		nodeGroup.links.new(secondsNode.outputs["Fac"],socket)
 
 def getMHWildsTimeNodeGroup(nodeTree):
 	#Shared clock for animated MH Wilds material effects
@@ -2107,13 +2159,13 @@ def getMHWildsTimeNodeGroup(nodeTree):
 	#Animate = 0 keeps every material at its t = 0 state (static preview), 1 plays along with the timeline
 	if MHWILDS_TIME_GROUP in bpy.data.node_groups:
 		nodeGroup = bpy.data.node_groups[MHWILDS_TIME_GROUP]
+		upgradeMHWildsTimeNodeGroup(nodeGroup)
 	else:
 		nodeGroup = bpy.data.node_groups.new(type="ShaderNodeTree", name=MHWILDS_TIME_GROUP)
 		newGroupSockets(nodeGroup,[("Seconds","NodeSocketFloat")],"OUTPUT")
 		nodes = nodeGroup.nodes
-		secondsNode = nodes.new("ShaderNodeValue")
-		secondsNode.name = "Seconds"
-		secondsNode.label = "Seconds (driven by frame)"
+		upgradeMHWildsTimeNodeGroup(nodeGroup)
+		secondsNode = nodes["Seconds"]
 		animateNode = nodes.new("ShaderNodeValue")
 		animateNode.name = "Animate"
 		animateNode.label = "Animate (0 = static)"
@@ -2122,27 +2174,12 @@ def getMHWildsTimeNodeGroup(nodeTree):
 		multNode = nodes.new("ShaderNodeMath")
 		multNode.operation = "MULTIPLY"
 		multNode.location = (200,0)
-		nodeGroup.links.new(secondsNode.outputs[0],multNode.inputs[0])
+		nodeGroup.links.new(secondsNode.outputs["Fac"],multNode.inputs[0])
 		nodeGroup.links.new(animateNode.outputs[0],multNode.inputs[1])
 		outNode = nodes.new("NodeGroupOutput")
 		outNode.location = (400,0)
 		nodeGroup.links.new(multNode.outputs[0],outNode.inputs["Seconds"])
-		scene = bpy.context.scene
-		try:
-			fcurve = nodeGroup.driver_add('nodes["Seconds"].outputs[0].default_value')
-			driver = fcurve.driver
-			driver.type = "SCRIPTED"
-			for name,path in (("fps","render.fps"),("fps_base","render.fps_base"),("start","frame_start")):
-				variable = driver.variables.new()
-				variable.name = name
-				variable.type = "SINGLE_PROP"
-				variable.targets[0].id_type = "SCENE"
-				variable.targets[0].id = scene
-				variable.targets[0].data_path = path
-			#Simple expression, runs without Python auto run
-			driver.expression = "(frame - start) * fps_base / fps"
-		except Exception as err:
-			print(f"Unable to create the material animation driver: {err}")
+	bindMHWildsTimeToScene(bpy.context.scene)
 	nodeGroupNode = nodeTree.nodes.new("ShaderNodeGroup")
 	nodeGroupNode.node_tree = nodeGroup
 	nodeGroupNode.label = "MH Wilds Material Time"

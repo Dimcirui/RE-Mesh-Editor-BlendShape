@@ -8,7 +8,7 @@ from ..gen_functions import raiseWarning,openFolder
 
 from .blender_re_mdf import createEmpty,reindexMaterials,createMDFCollection,checkNameUsage,buildMDF
 from .blender_re_mesh_mdf import importMDF
-from .blender_nodes_re_mdf import setMHWildsMaterialAnimation,getMHWildsMaterialAnimation
+from .blender_nodes_re_mdf import setMHWildsMaterialAnimation,getMHWildsMaterialAnimation,upgradeMHWildsTimeNodeGroup,bindMHWildsTimeToScene
 from ..blender_utils import showErrorMessageBox
 from .file_re_mdf import getMDFVersionToGameName
 from .re_mdf_presets import saveAsPreset,readPresetJSON
@@ -137,19 +137,9 @@ def _bindMaterialAnimationClock(scene):
 	clock = bpy.data.node_groups.get("MHWildsTime")
 	if clock is None or "Seconds" not in clock.nodes or "Animate" not in clock.nodes:
 		return False
-	fcurve = clock.driver_add('nodes["Seconds"].outputs[0].default_value')
-	driver = fcurve.driver
-	driver.type = "SCRIPTED"
-	for variable in list(driver.variables):
-		driver.variables.remove(variable)
-	for name,path in (("fps","render.fps"),("fps_base","render.fps_base"),("start","frame_start")):
-		variable = driver.variables.new()
-		variable.name = name
-		variable.type = "SINGLE_PROP"
-		variable.targets[0].id_type = "SCENE"
-		variable.targets[0].id = scene
-		variable.targets[0].data_path = path
-	driver.expression = "(frame - start) * fps_base / fps"
+	upgradeMHWildsTimeNodeGroup(clock)
+	if not bindMHWildsTimeToScene(scene):
+		return False
 	clock.update_tag()
 	return True
 
