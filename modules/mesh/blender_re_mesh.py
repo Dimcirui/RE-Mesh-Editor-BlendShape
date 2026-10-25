@@ -20,6 +20,7 @@ import json
 from .export_resources import owned_export_resources, track_object, track_mesh, track_armature, temporary_collection, unpin_shape_keys
 from .operation_progress import tracked_operation, stage as progress_stage
 from .material_table import KEY as MATERIAL_TABLE_KEY, decode_table, preserve_table
+from . import re9_bone_axes
 from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
@@ -794,7 +795,7 @@ def createEmpty(name,propertyList,parent = None,collection = None):
 		
 		
 	return obj
-def importSkeleton(parsedSkeleton,armatureName,collection,rotate90,targetArmatureName = None):
+def importSkeleton(parsedSkeleton,armatureName,collection,rotate90,targetArmatureName = None,remapRE9Axes = False):
 	mergedArmature = False
 	#Merging with existing armature if specified in import menu
 	
@@ -843,7 +844,15 @@ def importSkeleton(parsedSkeleton,armatureName,collection,rotate90,targetArmatur
 		print("The specified armature to merge with could not be found. Importing the armature as a new object.")
 	boneParentList = []#List of tuples containing armature bone and parent bone name string
 	hashedNameDict = dict()
-	for bone in parsedSkeleton.boneList:
+	#RE9: show bones with the other games' axes, see re9_bone_axes. Only into a fresh or already remapped armature.
+	axisCorrections = None
+	if remapRE9Axes:
+		mergedIntoRemapped = mergedArmature and armatureData.get(re9_bone_axes.ARMATURE_AXIS_FLAG) == re9_bone_axes.ARMATURE_AXIS_FLAG_RE9
+		boneNames,parentIndices,boneRotations = re9_bone_axes.parsedSkeletonRotations(parsedSkeleton)
+		if mergedIntoRemapped or (not mergedArmature and re9_bone_axes.usesRE9Axes(boneNames,boneRotations)):
+			axisCorrections = re9_bone_axes.computeCorrections(boneNames,parentIndices,boneRotations)
+			armatureData[re9_bone_axes.ARMATURE_AXIS_FLAG] = re9_bone_axes.ARMATURE_AXIS_FLAG_RE9
+	for boneIndex,bone in enumerate(parsedSkeleton.boneList):
 		if bone.boneName not in armatureData.bones:
 			hashedName = False
 			boneName = bone.boneName
@@ -871,7 +880,11 @@ def importSkeleton(parsedSkeleton,armatureName,collection,rotate90,targetArmatur
 				editBone.length = .05
 			if editBone.length < .01:
 				editBone.length = .01
-			editBone.matrix = bone.worldMatrix.matrix
+			if axisCorrections is not None:
+				editBone.matrix = re9_bone_axes.blenderRestMatrix(bone.worldMatrix.matrix,axisCorrections[boneIndex])
+				editBone[re9_bone_axes.AXIS_CORRECTION_PROP] = re9_bone_axes.correctionToProp(axisCorrections[boneIndex])
+			else:
+				editBone.matrix = bone.worldMatrix.matrix
 			editBone["reMeshWorldMatrix"] = bone.worldMatrix.matrix
 			editBone["reMeshLocalMatrix"] = bone.localMatrix.matrix
 			editBone["reMeshInverseMatrix"] = bone.inverseMatrix.matrix
@@ -1471,7 +1484,8 @@ def importREMeshFile(filePath,options):
 	#print("DEBUG: Finished colllections")
 	if parsedMesh.skeleton != None:
 		
-		armatureObj = importSkeleton(parsedMesh.skeleton,meshFileName.split(".mesh")[0]+" Armature",meshCollection,options["rotate90"],options["mergeArmature"])
+		remapRE9Axes = gameName == "RE9" and options.get("re9BoneAxes",True)
+		armatureObj = importSkeleton(parsedMesh.skeleton,meshFileName.split(".mesh")[0]+" Armature",meshCollection,options["rotate90"],options["mergeArmature"],remapRE9Axes)
 	#Create dictionary of material names mapping to material data to avoid assigning the wrong material in case of name duplication
 	materialDict = createMaterialDict(parsedMesh.materialNameList)
 	meshOffsetDict = dict()
@@ -1888,6 +1902,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		else:
 			transform = armatureObj.matrix_world
 		exportArmatureData.transform(transform)
+		#RE9 bone axis remap: undo the per-bone axis correction from import
+		fileWorldMatrixDict = re9_bone_axes.fileWorldMatrices(exportArmatureData,options.get("re9NewBonesCopyParent",False))
 		boneIndexDict = {bone.name: index for index, bone in enumerate(armatureObj.data.bones)}
 		#print(boneIndexDict)
 		for bone in exportArmatureData.bones:
@@ -1950,14 +1966,14 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					parsedBone.inverseMatrix.matrix = [list(row) for row in bone["reMeshInverseMatrix"]]
 			else:
 				
-				worldMatrix = bone.matrix_local.to_4x4().transposed()
+				worldMatrix = fileWorldMatrixDict[bone.name].transposed()
 				#print(worldMatrix)
 				
 				if bone.parent != None:
-				    localMatrix = (bone.matrix_local.to_4x4().transposed()) @ (bone.parent.matrix_local.to_4x4().transposed().inverted())
+				    localMatrix = worldMatrix @ (fileWorldMatrixDict[bone.parent.name].transposed().inverted())
 				else:
 
-					localMatrix = bone.matrix_local.transposed()
+					localMatrix = worldMatrix.copy()
 				inverseMatrix = worldMatrix.inverted()
 				
 				parsedBone.worldMatrix.matrix = [list(row) for row in worldMatrix]

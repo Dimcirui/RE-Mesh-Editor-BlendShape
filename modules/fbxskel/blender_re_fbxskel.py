@@ -5,12 +5,13 @@ from math import radians
 from ..blender_utils import showMessageBox
 from ..gen_functions import textColors,raiseWarning,splitNativesPath
 from .file_re_fbxskel import readFBXSkel,writeFBXSkel,FBXSkelFile,BoneEntry
+from ..mesh import re9_bone_axes
 
 rotate90Matrix = Matrix.Rotation(radians(90.0), 4, 'X')
 rotateNeg90Matrix = Matrix.Rotation(radians(-90.0), 4, 'X')
 #FBXSKEL IMPORT
 
-def importFBXSkelFile(filePath):
+def importFBXSkelFile(filePath,remapRE9Axes = True):
 	
 	fbxSkelFile = readFBXSkel(filePath)
 	try:
@@ -65,6 +66,19 @@ def importFBXSkelFile(filePath):
 		editBone.parent = armatureData.edit_bones[parentBoneName]
 		editBone.matrix = editBone.parent.matrix @ editBone.matrix
 	
+	#RE9: show bones with the other games' axes, see re9_bone_axes. Version 8 is shared with Pragmata, so check the axes too.
+	if remapRE9Axes and fbxSkelVersion == 8:
+		boneNames = [bone.boneName for bone in fbxSkelFile.boneEntryList]
+		fileWorldMatrices = [armatureData.edit_bones[name].matrix.copy() for name in boneNames]
+		boneRotations = [matrix.to_3x3().normalized() for matrix in fileWorldMatrices]
+		if re9_bone_axes.usesRE9Axes(boneNames,boneRotations):
+			axisCorrections = re9_bone_axes.computeCorrections(boneNames,[bone.parentIndex for bone in fbxSkelFile.boneEntryList],boneRotations)
+			for index,name in enumerate(boneNames):
+				editBone = armatureData.edit_bones[name]
+				editBone.matrix = fileWorldMatrices[index] @ axisCorrections[index].inverted().to_4x4()
+				editBone[re9_bone_axes.AXIS_CORRECTION_PROP] = re9_bone_axes.correctionToProp(axisCorrections[index])
+			armatureData[re9_bone_axes.ARMATURE_AXIS_FLAG] = re9_bone_axes.ARMATURE_AXIS_FLAG_RE9
+	
 	#armatureData.transform(armatureObj.matrix_world @ rotate90Matrix)
 	bpy.ops.object.mode_set(mode='OBJECT')
 	#Set color
@@ -96,7 +110,7 @@ def importFBXSkelFile(filePath):
 #FBXSKEL EXPORT
 
 
-def exportFBXSkelFile(filepath,targetArmature,usePose=True):
+def exportFBXSkelFile(filepath,targetArmature,usePose=True,copyParentForNewBones=False):
 	fbxSkelFile = FBXSkelFile()
 	armatureObj = bpy.data.objects.get(targetArmature,None)
 	if armatureObj != None and armatureObj.type == "ARMATURE":
@@ -105,6 +119,32 @@ def exportFBXSkelFile(filepath,targetArmature,usePose=True):
 		exportArmatureData.transform(rotateNeg90Matrix @ armatureObj.matrix_world)
 		boneIndexDict = {bone.name: index for index, bone in enumerate(armatureObj.data.bones)}
 		#print(boneIndexDict)
+		#World matrices: posed Blender bones, then file axes (RE9 axis correction multiplied back)
+		blenderWorldDict = {}
+		fileWorldDict = {}
+		def resolveWorld(bone):
+			if bone.name in fileWorldDict:
+				return fileWorldDict[bone.name]
+			if bone.parent != None:
+				resolveWorld(bone.parent)
+				blenderWorld = blenderWorldDict[bone.parent.name] @ (bone.parent.matrix_local.inverted() @ bone.matrix_local)
+			else:
+				blenderWorld = armatureObj.matrix_world @ bone.matrix_local
+			if usePose:
+				blenderWorld = blenderWorld @ armatureObj.pose.bones[bone.name].matrix_basis
+			blenderWorldDict[bone.name] = blenderWorld
+			correction = re9_bone_axes.correctionFromProp(bone.get(re9_bone_axes.AXIS_CORRECTION_PROP))
+			if correction != None:
+				fileWorld = blenderWorld @ correction.to_4x4()
+			elif copyParentForNewBones and bone.parent != None:
+				fileWorld = fileWorldDict[bone.parent.name].to_3x3().normalized().to_4x4()
+				fileWorld.translation = blenderWorld.translation
+			else:
+				fileWorld = blenderWorld
+			fileWorldDict[bone.name] = fileWorld
+			return fileWorld
+		for bone in exportArmatureData.bones:
+			resolveWorld(bone)
 		for bone in exportArmatureData.bones:
 			parsedBone = BoneEntry()
 			#Get hierarchy
@@ -143,11 +183,9 @@ def exportFBXSkelFile(filepath,targetArmature,usePose=True):
 			#Get matrices
 			
 			if bone.parent != None:
-				mat = exportArmatureData.bones[bone.parent.name].matrix_local.inverted() @ exportArmatureData.bones[bone.name].matrix_local
+				mat = fileWorldDict[bone.parent.name].inverted() @ fileWorldDict[bone.name]
 			else:
-				mat = armatureObj.matrix_world @ exportArmatureData.bones[bone.name].matrix_local
-			if usePose:
-				mat = mat @ armatureObj.pose.bones[bone.name].matrix_basis
+				mat = fileWorldDict[bone.name]
 			transform,rotation,scale = mat.decompose()
 			parsedBone.translation = transform
 			parsedBone.rotation = (rotation[1],rotation[2],rotation[3],rotation[0])

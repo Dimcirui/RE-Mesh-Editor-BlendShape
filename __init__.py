@@ -32,6 +32,10 @@ bl_info = {
 # without it bake with the authored normals turned by the surface.
 # surface_turn_export: shapeKeyExportMode KEEPNORMALS_SURFACE (keep-normals layout,
 # key normals turned by the geometric surface turn).
+# re9_bone_axes: RE9 armatures imported with re9BoneAxes carry
+# armature.data["REMeshBoneAxes"] = "RE9" and per-bone bone["reAxisCorrection"]
+# (3x3 C, row-major, file rotation = Blender rotation @ C). Their Blender axes
+# follow the RE4/Wilds convention, so tools must not apply their own RE9 correction.
 REME_FEATURES = {
 	"wilds_blendshape_export": 2,
 	"re4_blendshape_export": 2,
@@ -41,6 +45,7 @@ REME_FEATURES = {
 	"static_normals": 1,
 	"surface_turn_export": 1,
 	"wilds_material_animation": 1,
+	"re9_bone_axes": 1,
 }
 
 import bpy
@@ -867,6 +872,10 @@ class ImportREMesh(Operator, ImportHelper):
 	   name = "Import Bounding Boxes",
 	   description = "Import mesh and bone bounding boxes for debugging purposes",
 	   default = False)
+	re9BoneAxes : BoolProperty(
+	   name = "RE9: Standard Bone Axes",
+	   description = "RE9 only. Show bones with the axes the other RE Engine games use: body bones zero to a T-pose, helper bones stay coaxial with their parent, physics bones point up. The mesh file keeps RE9's own axes, export converts them back",
+	   default = True)
 	
 	#Internal properties for grouping material settings
 	showAdvancedOptions : BoolProperty(
@@ -928,6 +937,7 @@ class ImportREMesh(Operator, ImportHelper):
 		
 			column2.prop(self, "rotate90")
 			column2.prop(self, "importBoundingBoxes")
+			column2.prop(self, "re9BoneAxes")
 			#column2.prop(self, "importOcclusionMeshes")  
 		
 	def execute(self, context):
@@ -937,7 +947,7 @@ class ImportREMesh(Operator, ImportHelper):
 			raiseWarning("Could not create texture cache directory at " + bpy.context.preferences.addons[__name__].preferences.textureCachePath)
 		if self.mergeArmature:
 			self.clearScene = False
-		options = {"clearScene":self.clearScene,"createCollections":self.createCollections,"loadMaterials":self.loadMaterials,"loadMDFData":self.loadMDFData,"loadShellFur":self.loadShellFur,"loadUnusedTextures":self.loadUnusedTextures,"loadUnusedProps":self.loadUnusedProps,"useBackfaceCulling":self.useBackfaceCulling,"reloadCachedTextures":self.reloadCachedTextures,"mdfPath":self.mdfPath.replace("\"",""),"importAllLODs":self.importAllLODs,"importBlendShapes":self.importBlendShapes,"rotate90":self.rotate90,"mergeArmature":self.mergeArmature,"importArmatureOnly":self.importArmatureOnly,"mergeGroups":self.mergeGroups,"importShadowMeshes":self.importShadowMeshes,"importOcclusionMeshes":self.importOcclusionMeshes,"importBoundingBoxes":self.importBoundingBoxes}
+		options = {"clearScene":self.clearScene,"createCollections":self.createCollections,"loadMaterials":self.loadMaterials,"loadMDFData":self.loadMDFData,"loadShellFur":self.loadShellFur,"loadUnusedTextures":self.loadUnusedTextures,"loadUnusedProps":self.loadUnusedProps,"useBackfaceCulling":self.useBackfaceCulling,"reloadCachedTextures":self.reloadCachedTextures,"mdfPath":self.mdfPath.replace("\"",""),"importAllLODs":self.importAllLODs,"importBlendShapes":self.importBlendShapes,"rotate90":self.rotate90,"mergeArmature":self.mergeArmature,"importArmatureOnly":self.importArmatureOnly,"mergeGroups":self.mergeGroups,"importShadowMeshes":self.importShadowMeshes,"importOcclusionMeshes":self.importOcclusionMeshes,"importBoundingBoxes":self.importBoundingBoxes,"re9BoneAxes":self.re9BoneAxes}
 		editorVersion = ".".join(str(part) for part in bl_info["version"])
 		print(f"\n{textColors.BOLD}RE-Mesh-Editor-BlendShape V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
@@ -1149,6 +1159,10 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Export Bounding Boxes",
 	   description = "Exports the original bounding boxes from the \"Import Bounding Boxes\" import option. New bounding boxes will be generated for any bones that do not have them",
 	   default = False)
+	re9NewBonesCopyParent : BoolProperty(
+	   name = "RE9: New Bones Copy Parent Axes",
+	   description = "RE9 only. Bones added in Blender are written with the rotation of their direct parent bone, ignoring how they are rotated in Blender. Chain data made from the Blender orientation will not match these bones",
+	   default = False)
 	preserveMaterialTable : BoolProperty(
 	   name = "Preserve Original Material Table",
 	   description = "Keep the original material slot order of the imported mesh, including slots no exported submesh uses. New materials are appended at the end with a warning and need a matching MDF update. Requires a mesh imported with this version of the addon",
@@ -1256,6 +1270,8 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
 		layout.prop(self, "preserveBoneMatrices")
+		if self.filename_ext == ".250925211":
+			layout.prop(self, "re9NewBonesCopyParent")
 		layout.prop(self, "preserveMaterialTable")
 		layout.prop(self, "exportBoundingBoxes")
 	
@@ -1291,6 +1307,7 @@ class ExportREMesh(Operator, ExportHelper):
 			"rotate90": self.rotate90,
 			"useBlenderMaterialName": self.useBlenderMaterialName,
 			"preserveBoneMatrices": self.preserveBoneMatrices,
+			"re9NewBonesCopyParent": self.re9NewBonesCopyParent,
 			"exportBoundingBoxes": self.exportBoundingBoxes,
 			"autoSolveRepeatedUVs": self.autoSolveRepeatedUVs,
 			"preserveSharpEdges": self.preserveSharpEdges,
@@ -1503,7 +1520,11 @@ class ImportREFBXSkel(bpy.types.Operator, ImportHelper):
 			options={'SKIP_SAVE'}
 			)
 	filename_ext = ".fbxskel.*"
-	filter_glob: StringProperty(default="*.fbxskel.*", options={'HIDDEN'})
+	filter_glob: StringProperty(default="*.fbxskel.*;*.refskel.*", options={'HIDDEN'})
+	re9BoneAxes : BoolProperty(
+	   name = "RE9: Standard Bone Axes",
+	   description = "RE9 only (version 8 files whose bones use RE9's axes; Pragmata files are left as they are). Show bones with the axes the other RE Engine games use: body bones zero to a T-pose, helper bones stay coaxial with their parent, physics bones point up. Export converts them back",
+	   default = True)
 	
 	def invoke(self, context, event):
 		if self.directory:
@@ -1511,7 +1532,7 @@ class ImportREFBXSkel(bpy.types.Operator, ImportHelper):
 		context.window_manager.fileselect_add(self)
 		return {'RUNNING_MODAL'}
 	def execute(self, context):
-		success = importFBXSkelFile(self.filepath)
+		success = importFBXSkelFile(self.filepath,self.re9BoneAxes)
 		if success:
 			return {"FINISHED"}
 		else:
@@ -1552,7 +1573,11 @@ class ExportREFBXSkel(bpy.types.Operator, ExportHelper):
 		default = ".7"
 		)
 	
-	filter_glob: StringProperty(default="*.fbxskel*", options={'HIDDEN'})
+	filter_glob: StringProperty(default="*.fbxskel*;*.refskel*", options={'HIDDEN'})
+	re9NewBonesCopyParent : BoolProperty(
+	   name = "RE9: New Bones Copy Parent Axes",
+	   description = "RE9 only. Bones added in Blender are written with the rotation of their direct parent bone, ignoring how they are rotated in Blender. Chain data made from the Blender orientation will not match these bones",
+	   default = False)
 	targetArmature : StringProperty(
 	   name = "",
 	   description = "Set the armature to be exported",
@@ -1586,6 +1611,8 @@ class ExportREFBXSkel(bpy.types.Operator, ExportHelper):
 		layout.prop(self,"filename_ext")
 		layout.label(text = "FBXSkel Armature:")
 		layout.prop_search(self, "targetArmature",bpy.data,"objects",icon = "ARMATURE_DATA")
+		if self.filename_ext == ".8":
+			layout.prop(self, "re9NewBonesCopyParent")
 		if self.targetArmature in bpy.data.objects:
 			obj = bpy.data.objects[self.targetArmature]
 			if not obj.type == "ARMATURE":
@@ -1603,7 +1630,7 @@ class ExportREFBXSkel(bpy.types.Operator, ExportHelper):
 			row.alert=True
 	
 	def execute(self, context):
-		success = exportFBXSkelFile(self.filepath,self.targetArmature)
+		success = exportFBXSkelFile(self.filepath,self.targetArmature,copyParentForNewBones = self.re9NewBonesCopyParent)
 		if success:
 			self.report({"INFO"},"Exported RE FBXSkel successfully.")
 			bpy.data.objects[self.targetArmature]["BatchExport_path"] = self.filepath

@@ -107,7 +107,31 @@ Link Armature Bones (FBXSkel tools) adds a Copy Transforms constraint named
 `BoneLinkage` to each same-named pose bone of the chosen armatures, with
 the FBXSkel armature as the target, so mesh armatures follow its pose.
 
+## RE9 bone axes
+
+RE9 bones use joint-orient axes (local X along the bone, a 90-degree base
+frame per limb chain), unlike the other RE Engine games. With the import
+option RE9: Standard Bone Axes (on by default), mesh and FBXSkel/refskel
+import show RE9 bones with the other games' axes instead, and export
+converts them back. It applies to RE9 meshes (`.250925211`) and to version 8
+skeleton files whose torso bones are in RE9's axes; Pragmata shares version
+8 but uses the other games' axes and is left as it is.
+
+| Property | Written on | Value |
+|---|---|---|
+| `REMeshBoneAxes` | Armature data | `RE9` when the bones were converted |
+| `reAxisCorrection` | Each bone of such an armature | 9 floats, row-major 3x3 `C` |
+
+With `C` per bone, file rotation = Blender rotation @ `C` (bone-local, in the
+Y-up space before the Y Up to Z Up turn). On such an armature, body bones
+reach a T-pose by zeroing their rotations as in the other games, helper
+bones are coaxial with their parent, and physics bones point up. Tools must
+not apply their own RE9 axis correction to it. Armatures without the flag
+(older imports, option off) still have RE9's file axes. Link Armature Bones
+between a converted and an unconverted RE9 armature lines up the wrong axes.
+
 ## Change log
 
 - 2026-10-23: first version. Added `~TYPE = RE_FBXSKEL_ARMATURE` on FBXSkel
   import, and `~TYPE` on collections created by the Mod Workspace bake.
+- 2026-10-25: added `REMeshBoneAxes` and `reAxisCorrection` (RE9 bone axes).
