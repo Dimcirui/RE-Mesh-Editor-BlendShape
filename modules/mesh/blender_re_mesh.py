@@ -2127,8 +2127,12 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				cloneObj.name ="CLN_" + obj.name
 				# Blendshape export needs an undeformed Basis clone (Wilds always, RE4
 				# when shape keys are exported). Otherwise the current key mix is baked
-				# in, as in the original RE Mesh Editor.
+				# in, as in the original RE Mesh Editor. Drivers are muted as in
+				# extraction: a driven key would otherwise evaluate at its driver
+				# output, the basis would carry it, and no row would match the
+				# extraction basis (every key skipped as not moving).
 				if gameName == "MHWILDS" or blendShapeExportEnabled:
+					mutedDrivers = _mute_shape_key_drivers(obj)
 					storedShapeValues = _temporarily_zero_shape_key_values(obj)
 					try:
 						obj.data.update()
@@ -2138,6 +2142,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						)
 					finally:
 						_restore_shape_key_values(storedShapeValues)
+						_unmute_drivers(mutedDrivers)
 						obj.data.update()
 						bpy.context.view_layer.update()
 					_bake_locked_key_normals(obj, cloneObj.data)

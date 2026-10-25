@@ -290,6 +290,44 @@ def main():
 		assert [reread.rawNameList[i] for i in reread.blendShapeNameRemapList] == long_names
 	print("PASS shape key names longer than 63 bytes survive import and export", flush=True)
 
+	# A key whose driver is non-zero at export: the basis is built with drivers
+	# muted like extraction, otherwise it carries the key and no row matches
+	# (every key on the mesh skipped as not moving).
+	driven_collection = bpy.data.collections.new("DrivenShapeKeys")
+	bpy.context.scene.collection.children.link(driven_collection)
+	driven_obj = mesh_io.importMesh(
+		"LOD_0_Group_0_Sub_0__DrivenMat", vertexList=vertices, faceList=faces,
+		vertexNormalList=[(0, 0, 1)] * 3, material=None, collection=driven_collection,
+		rotate90=False)
+	driven_obj.data.uv_layers.new(name="UVMap")
+	driven_obj.data.materials.append(bpy.data.materials.new("DrivenMat"))
+	driven_obj.shape_key_add(name="Basis")
+	for name, z in (("Driven", .3), ("Plain", .1)):
+		key = driven_obj.shape_key_add(name=name)
+		key.data[0].co.z = z
+	fcurve = driven_obj.data.shape_keys.key_blocks["Driven"].driver_add("value")
+	fcurve.driver.type = "SCRIPTED"
+	fcurve.driver.expression = "1"
+	bpy.context.view_layer.update()
+	assert driven_obj.data.shape_keys.key_blocks["Driven"].value == 1.0
+	with tempfile.TemporaryDirectory(prefix="meshfix-driven-") as temporary:
+		driven_output = Path(temporary) / "driven.mesh.221108797"
+		assert mesh_io.exportREMeshFile(str(driven_output), dict(
+			options, targetCollection=driven_collection.name, exportBlendShapes=True,
+			blendShapeExportMode=-1))
+		driven_parsed = parse.ParsedREMesh()
+		driven_parsed.ParseREMesh(codec.readREMesh(str(driven_output)), {"importBlendShapes": True})
+		driven_submesh = driven_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0]
+		exported = {key.blendShapeName: key.deltas for key in driven_submesh.blendShapeList}
+		assert sorted(exported) == ["Driven", "Plain"], sorted(exported)
+		assert np.allclose(np.asarray(exported["Driven"])[:, 2], [.3, 0, 0], atol=.001), exported["Driven"]
+		assert np.allclose(np.asarray(exported["Plain"])[:, 2], [.1, 0, 0], atol=.001), exported["Plain"]
+		# the basis is undeformed, not carrying the driven key
+		assert np.allclose(np.asarray(driven_submesh.vertexPosList)[:, 2], 0, atol=.001), driven_submesh.vertexPosList
+	assert not fcurve.mute
+	assert driven_obj.data.shape_keys.key_blocks["Driven"].value == 1.0
+	print("PASS keys export while a driver holds one non-zero; drivers come back on", flush=True)
+
 	# Blender caps bone and vertex group names at 63 bytes, not characters: a
 	# CJK name reaches the limit at 22 characters and must be hashed on import
 	# and restored on export.
