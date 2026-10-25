@@ -444,6 +444,7 @@ def textureImagesUsable(imageList):
 	return bool(imageList) and all(image != None and image.size[0] > 0 and image.size[1] > 0 and image.has_data for image in imageList)
 
 #Raw RGBA8 values measured from original .241106027 TEX resources, not guessed from slot names.
+#Engine-wide resources: RE4 .143221013 copies decode to the same values (within BC rounding).
 #Exact logical paths only: arbitrary character textures containing "null" remain ordinary failures.
 MHWILDS_NULL_TEXTURES = {
 	'art/library/light/lightpostlibrary/lp_assets/texture/check/lp_nullgray':((129, 128, 129, 255),1),
@@ -486,8 +487,6 @@ MHWILDS_SLOT_NULL_TEXTURES = {slot:null for null,slots in _MHWILDS_SLOT_NULLS.it
 MHWILDS_FUR_NOISE_MISSING_KEY = "re_mdf_preview_fur_noise_missing"
 
 def getSystemNullTextureImages(texturePath,textureType,outputPath,gameName):
-	if gameName != "MHWILDS":
-		return None
 	key = texturePath.replace("\\","/").replace("@","").lower()
 	key = re.sub(r"\.tex(?:\.\d+)?$","",key)
 	entry = MHWILDS_NULL_TEXTURES.get(key)

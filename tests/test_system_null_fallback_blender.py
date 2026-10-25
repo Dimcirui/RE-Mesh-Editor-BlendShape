@@ -102,7 +102,7 @@ try:
     check('logical path normalization handles case, slashes, marker and version',alias is not None)
     check('same basename in another directory is not whitelisted',main.getSystemNullTextureImages('Art/Character/NullWhite.tex','BaseDielectricMap','white.png','MHWILDS') is None)
     check('unknown null variant is not guessed',main.getSystemNullTextureImages('systems/rendering/NullCustom.tex','BaseDielectricMap','white.png','MHWILDS') is None)
-    check('measured Wilds packed defaults are not applied to another game',main.getSystemNullTextureImages('systems/rendering/NullNormal.tex','NormalMap','normal.png','RE4') is None)
+    check('engine nulls also resolve for other games',main.getSystemNullTextureImages('systems/rendering/NullBlack.tex','MaskMap','black.png','RE4') is not None)
     a=main.getSystemNullTextureImages('systems/rendering/NullGray.tex','BaseDielectricMap','gray.png','MHWILDS')
     b=main.getSystemNullTextureImages('systems/rendering/NullGray.tex','NormalMap','gray.png','MHWILDS')
     check('color and data use different Image datablocks',a[0]!=b[0] and a[0].colorspace_settings.name=='sRGB' and b[0].colorspace_settings.name=='Non-Color')
