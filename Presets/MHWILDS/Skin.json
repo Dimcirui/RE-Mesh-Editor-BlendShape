@@ -26,18 +26,8 @@
                 1.0,
                 1.0
             ],
-            "Padding": 0
-        },
-        {
-            "Property Name": "RayTrace_BaseColor",
-            "Data Type": "COLOR",
-            "Value": [
-                1.0,
-                1.0,
-                1.0,
-                1.0
-            ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ObjectOffset",
@@ -48,7 +38,20 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "RayTrace_BaseColor",
+            "Data Type": "COLOR",
+            "Value": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "BB_Min",
@@ -59,7 +62,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "BB_Max",
@@ -70,7 +74,8 @@
                 1.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_ColorParam1",
@@ -81,7 +86,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_ColorParam2",
@@ -92,7 +98,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param1",
@@ -103,7 +110,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param2",
@@ -114,7 +122,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param3",
@@ -125,7 +134,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param4",
@@ -136,7 +146,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param5",
@@ -147,7 +158,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param6",
@@ -158,7 +170,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param7",
@@ -169,7 +182,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param8",
@@ -180,7 +194,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param9",
@@ -191,7 +206,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFX_Param10",
@@ -202,7 +218,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_R",
@@ -213,7 +230,8 @@
                 0.501960813999176,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_G",
@@ -224,7 +242,8 @@
                 0.501960813999176,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_B",
@@ -235,7 +254,8 @@
                 0.501960813999176,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_A",
@@ -246,7 +266,8 @@
                 0.501960813999176,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_Roughness",
@@ -257,7 +278,8 @@
                 1.0,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_Mask_Width",
@@ -268,7 +290,8 @@
                 1.0,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ColorLayer_Mask_Fade",
@@ -279,7 +302,8 @@
                 1.0,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AddColorUV",
@@ -290,223 +314,260 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Wet_Roughness",
             "Data Type": "FLOAT",
             "Value": 0.4000000059604645,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Wet_Basecolor_Blend",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "VFXBlend_Weight",
             "Data Type": "FLOAT",
             "Value": 0.699999988079071,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "DynamicMat_Weight",
             "Data Type": "FLOAT",
             "Value": 0.6000000238418579,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Stain_ID",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "DynamicMat_Tex_Tile",
             "Data Type": "FLOAT",
             "Value": 2.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseSecondaryUV_ColorLayer_MaskMap",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "RoughnessParam",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "MetalParam",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "TranslucentParam",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Use_RimTranslucent",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "RimTrasnlucent_Power",
             "Data Type": "FLOAT",
             "Value": 2.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "RimTranslucent_NormalBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "OcclusionParam",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "SSSParam",
             "Data Type": "FLOAT",
             "Value": 0.5,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "SSSProfile",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AlphaAdjust",
             "Data Type": "FLOAT",
             "Value": 0.5,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AlphaTest_Ref",
             "Data Type": "FLOAT",
             "Value": 0.10000000149011612,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseTempDither",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "DitherShift",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseAOSecondaryUV",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AO_to_Cavity",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "BackFaceFlipNormal",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ChangeUV",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "HorizonFade",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
-        },
-        {
-            "Property Name": "Use_AntiTranslucent_Diffuse",
-            "Data Type": "BOOL",
-            "Value": 0.0,
-            "Padding": 0
-        },
-        {
-            "Property Name": "PassThrough",
-            "Data Type": "FLOAT",
-            "Value": 0.0,
-            "Padding": 0
-        },
-        {
-            "Property Name": "Dissolve",
-            "Data Type": "FLOAT",
-            "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "WetBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "Use_AntiTranslucent_Diffuse",
+            "Data Type": "BOOL",
+            "Value": 0.0,
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "SandBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "PassThrough",
+            "Data Type": "FLOAT",
+            "Value": 0.0,
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Use_VertexColor_Offset",
             "Data Type": "BOOL",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "Dissolve",
+            "Data Type": "FLOAT",
+            "Value": 1.0,
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "WetHeightMask_Width",
             "Data Type": "FLOAT",
             "Value": 0.20000000298023224,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Enable_VFXMaterialBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Sand_Weight",
             "Data Type": "FLOAT",
             "Value": 0.20000000298023224,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseOverRay_ColorLayer",
             "Data Type": "BOOL",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "NormalBlendParam",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         }
     ],
     "Texture Bindings": [

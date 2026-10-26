@@ -26,7 +26,8 @@
                 1.0,
                 1.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Emissive_Color",
@@ -37,18 +38,8 @@
                 1.0,
                 1.0
             ],
-            "Padding": 0
-        },
-        {
-            "Property Name": "RayTrace_BaseColor",
-            "Data Type": "COLOR",
-            "Value": [
-                1.0,
-                1.0,
-                1.0,
-                1.0
-            ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ObjectOffset",
@@ -59,7 +50,20 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "RayTrace_BaseColor",
+            "Data Type": "COLOR",
+            "Value": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "BB_Min",
@@ -70,7 +74,8 @@
                 0.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "BB_Max",
@@ -81,229 +86,288 @@
                 1.0,
                 0.0
             ],
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Wet_Roughness",
             "Data Type": "FLOAT",
             "Value": 0.25,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Wet_Basecolor_Blend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "DynamicMat_Weight",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Stain_ID",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "DynamicMat_Tex_Tile",
             "Data Type": "FLOAT",
             "Value": 2.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "RoughnessParam",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "MetalParam",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "TranslucentParam",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Use_RimTranslucent",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "RimTrasnlucent_Power",
             "Data Type": "FLOAT",
             "Value": 2.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "RimTranslucent_NormalBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "OcclusionParam",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "SSSParam",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "SSSProfile",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Use_Basecolor_to_Emissive",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Fix_BaseColor_to_Emissive",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "Use_Basecolor_Mask",
+            "Data Type": "BOOL",
+            "Value": 0.0,
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "Basecolor_Mask_Min",
+            "Data Type": "FLOAT",
+            "Value": 0.0,
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "Basecolor_Mask_Max",
+            "Data Type": "FLOAT",
+            "Value": 1.0,
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Emissive_Power",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Emissive_Intensity",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseCounterExposureEmit",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "CounterExposureEmit_Blend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AlphaAdjust",
             "Data Type": "FLOAT",
             "Value": 0.5,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AlphaTest_Ref",
             "Data Type": "FLOAT",
             "Value": 0.10000000149011612,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseTempDither",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "DitherShift",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "UseAOSecondaryUV",
             "Data Type": "BOOL",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "AO_to_Cavity",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "BackFaceFlipNormal",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "ChangeUV",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "HorizonFade",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
-        },
-        {
-            "Property Name": "Use_AntiTranslucent_Diffuse",
-            "Data Type": "BOOL",
-            "Value": 0.0,
-            "Padding": 0
-        },
-        {
-            "Property Name": "PassThrough",
-            "Data Type": "FLOAT",
-            "Value": 0.0,
-            "Padding": 0
-        },
-        {
-            "Property Name": "Dissolve",
-            "Data Type": "FLOAT",
-            "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "WetBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "Use_AntiTranslucent_Diffuse",
+            "Data Type": "BOOL",
+            "Value": 0.0,
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "SandBlend",
             "Data Type": "FLOAT",
             "Value": 0.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "PassThrough",
+            "Data Type": "FLOAT",
+            "Value": 0.0,
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "Use_VertexColor_Offset",
             "Data Type": "BOOL",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
-            "Property Name": "RayTrace_Emissive_Booster",
+            "Property Name": "Dissolve",
             "Data Type": "FLOAT",
             "Value": 1.0,
-            "Padding": 0
+            "Padding": 0,
+            "FrontPadding": 0
         },
         {
             "Property Name": "WetHeightMask_Width",
             "Data Type": "FLOAT",
             "Value": 0.20000000298023224,
-            "Padding": 12
+            "Padding": 0,
+            "FrontPadding": 0
+        },
+        {
+            "Property Name": "RayTrace_Emissive_Booster",
+            "Data Type": "FLOAT",
+            "Value": 1.0,
+            "Padding": 16,
+            "FrontPadding": 0
         }
     ],
     "Texture Bindings": [
