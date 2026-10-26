@@ -23,6 +23,7 @@ class OBJECT_PT_REModWorkspacePanel(Panel):
 	bl_region_type = "UI"
 	bl_category = "RE Mesh"   
 	bl_context = "objectmode"
+	bl_options = {'DEFAULT_CLOSED'}
 
 	@classmethod
 	def poll(self,context):

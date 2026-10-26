@@ -32,6 +32,12 @@ class OBJECT_PT_MDFObjectModePanel(Panel):
 		layout = self.layout
 		scene = context.scene
 		re_mdf_toolpanel = scene.re_mdf_toolpanel
+		row = layout.row(align = True)
+		row.operator("re_mdf.importfile", text = "Import MDF", icon = "IMPORT")
+		row.operator("re_mdf.exportfile", text = "Export MDF", icon = "EXPORT")
+		row = layout.row(align = True)
+		row.operator("re_mesh.importfile", text = "Import Mesh", icon = "IMPORT")
+		row.operator("re_mesh.exportfile", text = "Export Mesh", icon = "EXPORT")
 		layout.operator("re_mdf.create_mdf_collection",icon = "COLLECTION_NEW")
 		layout.label(text = "Active MDF Material Collection")
 		layout.prop_search(re_mdf_toolpanel, "mdfCollection",bpy.data,"collections",icon = "COLLECTION_COLOR_05")
