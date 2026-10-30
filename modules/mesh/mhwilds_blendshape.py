@@ -209,6 +209,22 @@ def _pack_normal_rows(normals):
 	return words.reshape(-1).view("<u4")
 
 
+# Keep-normals rows whose packed normal is within one int8 step (under half a
+# degree) of the base are not stored as changed. Turned normals of vertices a
+# channel does not move land there, and storing them stretched targets over
+# vertices no channel moves (Onimusha ch001_00_00 target 0: 35269 -> 28425
+# rows per channel, 19% fewer payload rows in the file).
+NORMAL_ROW_TOLERANCE = 1
+
+
+def _normal_rows_changed(rows, base_rows):
+	"""Rows whose packed normal differs from the base by more than the tolerance."""
+	rows = np.asarray(rows, dtype="<u4").view(np.int8).reshape((-1, 4))
+	base_rows = np.asarray(base_rows, dtype="<u4").view(np.int8).reshape((-1, 4))
+	difference = np.abs(rows[:, :3].astype(np.int16) - base_rows[:, :3].astype(np.int16))
+	return difference.max(axis=1) > NORMAL_ROW_TOLERANCE
+
+
 def _symmetric_aabb(delta_arrays):
 	aabb = mesh_format.AABB()
 	valid = [
@@ -403,7 +419,7 @@ def _group_channels(submeshes, with_normals=False):
 					# game lerps towards every stored row, so they also damp
 					# the other active channels there.
 					mask[start:start + count] |= words != 0
-			mask |= valid & (rows != base_rows)
+			mask |= valid & _normal_rows_changed(rows, base_rows)
 			if not mask.any():
 				continue
 		channels.append((name, deltas, mask, rows))
