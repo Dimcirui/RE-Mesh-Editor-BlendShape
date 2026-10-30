@@ -1431,7 +1431,7 @@ def importREMeshFile(filePath,options):
 			#print(mdfPath)
 		if mdfPath != None and not reMesh.materialNameRemapList and not parsedMesh.isMPLY:
 			try:
-				mdfFile = readMDF(mdfPath)
+				mdfFile = readMDF(mdfPath,preferredLayout = gameName)#Layout names match game names, used when mdf2.51 parses as both RE9 and ONIWOTS
 			except Exception as err:
 				warningList.append("Could not read MDF material names from " + mdfPath + ": " + str(err))
 			if mdfFile != None and applyMDFMaterialNames(parsedMesh,mdfFile):
@@ -1550,7 +1550,7 @@ def importREMeshFile(filePath,options):
 					if options["loadMDFData"]:
 						print("Loading Mesh Materials From MDF...")
 					if mdfFile == None:
-						mdfFile = readMDF(mdfPath)
+						mdfFile = readMDF(mdfPath,preferredLayout = gameName)#Layout names match game names, used when mdf2.51 parses as both RE9 and ONIWOTS
 					importMDF(mdfFile,materialDict,options["loadUnusedTextures"],options["loadUnusedProps"],options["useBackfaceCulling"],options["reloadCachedTextures"],chunkPath = chunkPath,gameName = gameName,arrangeNodes = True)
 					
 					mdfImportEndTime = time.time()

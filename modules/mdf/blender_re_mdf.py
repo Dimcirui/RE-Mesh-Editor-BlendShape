@@ -266,7 +266,7 @@ def getMDFFlags(obj,flags,flagsB):
 
 
 def importMDFFile(filePath,parentCollection = None):
-	mdfFile = readMDF(filePath)
+	mdfFile = readMDF(filePath,preferredLayout = bpy.context.scene.re_mdf_toolpanel.activeGame)#Layout names match game names, used when mdf2.51 parses as both RE9 and ONIWOTS
 	mdfFileName = os.path.splitext(os.path.split(filePath)[1])[0]
 	try:
 		mdfVersion = int(os.path.splitext(filePath)[1].replace(".",""))

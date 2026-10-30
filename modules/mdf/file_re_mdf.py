@@ -4,6 +4,7 @@ import os
 from ..gen_functions import textColors,raiseWarning,raiseError,getPaddingAmount,read_uint,read_int,read_uint64,read_float,read_short,read_ushort,read_ubyte,read_unicode_string,read_byte,write_uint,write_int,write_uint64,write_float,write_short,write_ushort,write_ubyte,write_unicode_string,write_byte
 from ..hashing.mmh3.pymmh3 import hashUTF8,hashUTF16
 import ctypes
+import struct
 
 DEBUG_MODE = False
 
@@ -48,25 +49,92 @@ def getMDFVersionToGameName(gameName):
 #Version 51 is shared by games with different material entry layouts
 MDF_LAYOUT_RE9 = "RE9"#108 byte material entry, extra uint64 offset before property headers offset
 MDF_LAYOUT_ONIWOTS = "ONIWOTS"#104 byte material entry, extra int (float count of property data) after property count
-def detectMDFLayout(file,version):
-	#Textures headers always directly follow the material entries, so the first material's texture headers offset reveals the entry size
+#(material entry size, position of the int counts after property count, position of the uint64 offsets) per layout
+MDF_LAYOUT_ENTRY_INFO = {
+	MDF_LAYOUT_RE9:(108,20,60),
+	MDF_LAYOUT_ONIWOTS:(104,24,56),
+	}
+def _isValidMDFString(data,offset):
+	if offset < 16 or offset % 2 != 0 or offset >= len(data):
+		return False
+	end = offset
+	while end + 1 < len(data) and end - offset < 2048:
+		if data[end] == 0 and data[end+1] == 0:
+			try:
+				data[offset:end].decode("utf-16le")
+			except UnicodeDecodeError:
+				return False
+			return True
+		end += 2
+	return False
+def _mdfLayoutParses(data,layout):
+	#Checks that every offset, string and property block of the material entries is in range when read with this layout
+	entrySize,countsPos,offsetsPos = MDF_LAYOUT_ENTRY_INFO[layout]
+	size = len(data)
+	materialCount = struct.unpack_from("<H",data,6)[0]
+	if 16 + entrySize * materialCount > size:
+		return False
+	for i in range(materialCount):
+		base = 16 + entrySize * i
+		matNameOffset = struct.unpack_from("<Q",data,base)[0]
+		propBlockSize,propertyCount = struct.unpack_from("<2i",data,base+12)
+		textureCount,gpbfNameCount,gpbfPathCount = struct.unpack_from("<3i",data,base+countsPos)
+		propHeadersOffset,texHeadersOffset,GPUBufferOffset,propDataOffset,mmtrPathOffset,mmtrsDataOffset = struct.unpack_from("<6Q",data,base+offsetsPos)
+		if min(propBlockSize,propertyCount,textureCount,gpbfNameCount,gpbfPathCount) < 0 or max(propertyCount,textureCount,gpbfNameCount) > 4096:
+			return False
+		if not _isValidMDFString(data,matNameOffset) or not _isValidMDFString(data,mmtrPathOffset):
+			return False
+		if texHeadersOffset + 32 * textureCount > size:
+			return False
+		for t in range(textureCount):
+			typeOffset,_,pathOffset = struct.unpack_from("<QQQ",data,texHeadersOffset + 32 * t)
+			if not _isValidMDFString(data,typeOffset) or not _isValidMDFString(data,pathOffset):
+				return False
+		if propHeadersOffset + 24 * propertyCount > size:
+			return False
+		for p in range(propertyCount):
+			nameOffset,_,valueOffset,paramCount,_ = struct.unpack_from("<QQiHH",data,propHeadersOffset + 24 * p)
+			#The last block's size can count trailing padding the file does not have, only the values must be in the file
+			if not _isValidMDFString(data,nameOffset) or valueOffset < 0 or valueOffset + 4 * paramCount > propBlockSize or propDataOffset + valueOffset + 4 * paramCount > size:
+				return False
+		if gpbfNameCount > 0:
+			if GPUBufferOffset + 32 * gpbfNameCount > size:
+				return False
+			for g in range(gpbfNameCount * 2):
+				if not _isValidMDFString(data,struct.unpack_from("<Q",data,GPUBufferOffset + 16 * g)[0]):
+					return False
+		if mmtrsDataOffset != 0:
+			if mmtrsDataOffset + 64 > size:
+				return False
+			for indexOffset in struct.unpack_from("<8Q",data,mmtrsDataOffset):
+				if indexOffset + 4 > size or indexOffset + 4 + 4 * struct.unpack_from("<I",data,indexOffset)[0] > size:
+					return False
+	return True
+def detectMDFLayout(file,version,preferredLayout = None):
+	#Parses the material entries with each layout and keeps the one whose offsets, strings and property blocks are all in range.
+	#When both parse, preferredLayout (the active game) decides, then where the first material's texture headers sit:
+	#vanilla files put them directly after the material entries, MMTR Workbench edits can append the tables at the end of the file.
 	if version < 51:
 		return None
 	pos = file.tell()
-	layout = MDF_LAYOUT_RE9
 	try:
-		file.seek(6)
-		materialCount = read_ushort(file)
-		if materialCount > 0:
-			#(layout, material entry size, position of texture headers offset in entry)
-			for candidate,entrySize,texOffsetPos in ((MDF_LAYOUT_RE9,108,68),(MDF_LAYOUT_ONIWOTS,104,64)):
-				file.seek(16 + texOffsetPos)
-				if read_uint64(file) == 16 + entrySize * materialCount:
-					layout = candidate
-					break
+		file.seek(0)
+		data = file.read()
 	finally:
 		file.seek(pos)
-	return layout
+	if len(data) < 16:
+		return MDF_LAYOUT_RE9
+	validLayouts = [layout for layout in (MDF_LAYOUT_RE9,MDF_LAYOUT_ONIWOTS) if _mdfLayoutParses(data,layout)]
+	if len(validLayouts) == 1:
+		return validLayouts[0]
+	if preferredLayout in validLayouts:
+		return preferredLayout
+	materialCount = struct.unpack_from("<H",data,6)[0]
+	for layout in (validLayouts or (MDF_LAYOUT_RE9,MDF_LAYOUT_ONIWOTS)):
+		entrySize,_,offsetsPos = MDF_LAYOUT_ENTRY_INFO[layout]
+		if materialCount > 0 and len(data) >= 16 + offsetsPos + 16 and struct.unpack_from("<Q",data,16 + offsetsPos + 8)[0] == 16 + entrySize * materialCount:
+			return layout
+	return validLayouts[0] if validLayouts else MDF_LAYOUT_RE9
 class SIZEDATA():
 	def __init__(self,version,layout = None):
 		self.HEADER_SIZE = 16
@@ -525,8 +593,8 @@ class MDFFile():
 		self.Header = MDFHeader()
 		self.materialList = []
 		self.stringList = []#Used during writing
-	def read(self,file,version):
-		self.layout = detectMDFLayout(file,version)
+	def read(self,file,version,preferredLayout = None):
+		self.layout = detectMDFLayout(file,version,preferredLayout)
 		self.Header.read(file)
 		debugprint(self.Header)
 		for i in range(0,self.Header.materialCount):
@@ -535,8 +603,8 @@ class MDFFile():
 			debugprint(materialEntry)
 			self.materialList.append(materialEntry)
 		
-	def read_fast(self,file,version):
-		self.layout = detectMDFLayout(file,version)
+	def read_fast(self,file,version,preferredLayout = None):
+		self.layout = detectMDFLayout(file,version,preferredLayout)
 		self.Header.read_fast(file)
 		debugprint(self.Header)
 		for i in range(0,self.Header.materialCount):
@@ -785,7 +853,7 @@ class MDFFile():
 				file.seek(material.mmtrsDataOffset)
 				#print(material.mmtrsData)
 				material.mmtrsData.write(file)
-def readMDF(filepath):
+def readMDF(filepath,preferredLayout = None):#preferredLayout: MDF_LAYOUT_* used when a shared version parses with more than one layout
 	#print(textColors.OKCYAN + "__________________________________\nMDF read started." + textColors.ENDC)
 	print("Opening " + filepath)
 	try:  
@@ -799,11 +867,11 @@ def readMDF(filepath):
 		#version = 23
 	mdfFile = MDFFile()
 	mdfFile.fileVersion = version
-	mdfFile.read(file,version)
+	mdfFile.read(file,version,preferredLayout)
 	file.close()
 	#print(textColors.OKGREEN + "__________________________________\nMDF read finished." + textColors.ENDC)
 	return mdfFile
-def readMDFFast(filepath):
+def readMDFFast(filepath,preferredLayout = None):
 	#print(textColors.OKCYAN + "__________________________________\nMDF read started." + textColors.ENDC)
 	print("Opening " + filepath)
 	try:  
@@ -817,7 +885,7 @@ def readMDFFast(filepath):
 		version = 23
 	mdfFile = MDFFile()
 	debugprint("File Version "+str(version))
-	mdfFile.read_fast(file,version)
+	mdfFile.read_fast(file,version,preferredLayout)
 	file.close()
 	#print(textColors.OKGREEN + "__________________________________\nMDF read finished." + textColors.ENDC)
 	return mdfFile
