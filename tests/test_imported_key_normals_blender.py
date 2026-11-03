@@ -213,6 +213,17 @@ def main(scratch):
 	bulgeD = sorted(word for _o, word in rowsD.get("bulge", {}).values())
 	check("D: unedited bulge rows still the imported marker", bulgeD and bulgeD == bulgeB, (len(bulgeB), len(bulgeD)))
 
+	# New custom normals: the imported rows were turned from the old base, so
+	# the unedited key gets computed rows too
+	check("base normals stored on import", len(keys.get(brm.IMPORTED_BASE_NORMALS_PROPERTY, [])) == len(obj.data.vertices))
+	obj.data.normals_split_custom_set_from_vertices([(0.0, 0.6, 0.8)] * len(obj.data.vertices))
+	obj.data.update()
+	pathN = Path(scratch) / "knorm_new_base.mesh.241111606"
+	check("export with new base normals", export(brm, collection, pathN) is True)
+	rowsN, _ = second_rows(frm, pathN)
+	check("N: unedited bulge rows are computed, not the marker", rowsN.get("bulge")
+		and not any(word == MARKER2_WORD for _o, word in rowsN["bulge"].values()))
+
 	# Editing the basis invalidates every key
 	keys.reference_key.data[top].co.z += 0.001
 	check("basis edit invalidates the other key", brm.importedKeyNormalWords(obj.data, keys.key_blocks["bulge"]) is None)

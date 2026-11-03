@@ -46,7 +46,8 @@ normalization, the Wilds normal-group byte mapping and game version tables.
   second rows are overwritten with marker normals is imported and re-exported:
   unedited keys write the imported rows back, the rows follow a rename, a
   Static Normals key and an edited key get computed rows while the other key
-  keeps its rows, and a basis edit invalidates every key.
+  keeps its rows, new custom normals switch the imported rows off, and a basis
+  edit invalidates every key.
 - `test_re9_bone_axes_blender.py`: RE9 bone axis remap on a synthetic
   skeleton: body bones show the standard basis, twist helpers and chain links
   stay coaxial with their parent, physics roots show upright, file matrices

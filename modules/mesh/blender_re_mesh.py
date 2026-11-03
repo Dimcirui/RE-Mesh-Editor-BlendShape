@@ -217,6 +217,15 @@ def setStaticNormals(meshData, keyName, static):
 # Normals key, gets computed rows. Keyed by Blender key name like
 # RE_StaticNormals, and carried over renames the same way.
 IMPORTED_KEY_NORMALS_PROPERTY = "RE_ImportedKeyNormals"
+# The base normals at import, packed like the rows, per vertex. The imported
+# rows were turned from these, so Keep Normals export drops an object's rows
+# once its exported base normals have moved away from them (2026-11-03: new
+# custom normals on a body's clothing, while 49 keys that do not move it still
+# wrote their imported rows; any of them pulled the clothing's normals in
+# game). A plain round trip moves vanilla twins by 1-4 int8 units.
+IMPORTED_BASE_NORMALS_PROPERTY = "RE_ImportedBaseNormals"
+IMPORTED_BASE_NORMAL_TOLERANCE = 4
+IMPORTED_BASE_CHANGED_FRACTION = 0.01
 
 
 def _shape_key_fingerprint(meshData, shapeKey):
@@ -231,9 +240,21 @@ def _shape_key_fingerprint(meshData, shapeKey):
 	return crc - (1 << 32) if crc >= (1 << 31) else crc
 
 
-def storeImportedKeyNormals(meshData, wordsByKeyName):
+def _packed_normal_words(normals):
+	"""int8 xyz words like the Normal element (floor(n * 127)), top byte 0."""
+	normals = np.asarray(normals, dtype=np.float32).reshape((-1, 3))
+	words = np.zeros((len(normals), 4), dtype=np.int8)
+	words[:, :3] = np.clip(np.floor(normals * 127.0), -127, 127).astype(np.int8)
+	return words.reshape(-1).view("<u4")
+
+
+def storeImportedKeyNormals(meshData, wordsByKeyName, baseNormals=None):
 	keys = meshData.shape_keys
 	count = len(meshData.vertices)
+	if baseNormals is not None and len(baseNormals) == count:
+		keys[IMPORTED_BASE_NORMALS_PROPERTY] = (
+			_packed_normal_words(baseNormals).view(np.int32).tolist()
+		)
 	stored = {}
 	for keyName, words in wordsByKeyName.items():
 		shapeKey = keys.key_blocks.get(keyName)
@@ -263,6 +284,30 @@ def importedKeyNormalWords(meshData, shapeKey):
 	):
 		return None
 	return words
+
+
+def importedBaseNormalsMatch(meshData, baseNormals, sourceVertexIndexList):
+	"""False when the exported base normals moved away from the imported ones
+	on more than IMPORTED_BASE_CHANGED_FRACTION of the rows. Imports from
+	before the base normals were recorded always match."""
+	keys = meshData.shape_keys
+	stored = keys.get(IMPORTED_BASE_NORMALS_PROPERTY) if keys is not None else None
+	if stored is None:
+		return True
+	words = np.asarray(stored, dtype=np.int64).astype(np.uint32)
+	if len(words) != len(meshData.vertices):
+		return False
+	sources = np.asarray(sourceVertexIndexList, dtype=np.int64)
+	valid = (sources >= 0) & (sources < len(words))
+	if not valid.any():
+		return True
+	current = _packed_normal_words(np.asarray(baseNormals)[valid])
+	imported = words[sources[valid]]
+	difference = np.abs(
+		current.view(np.int8).reshape((-1, 4))[:, :3].astype(np.int16)
+		- imported.view(np.int8).reshape((-1, 4))[:, :3].astype(np.int16)
+	).max(axis=1)
+	return (difference > IMPORTED_BASE_NORMAL_TOLERANCE).mean() <= IMPORTED_BASE_CHANGED_FRACTION
 
 
 def _mute_shape_key_drivers(obj):
@@ -600,6 +645,14 @@ def _build_blend_shape_entries_for_export(
 				for key in rawsubmesh.data.shape_keys.key_blocks
 			)
 		)
+		if useImportedNormals and not importedBaseNormalsMatch(
+			rawsubmesh.data, baseNormals, sourceVertexIndexList
+		):
+			useImportedNormals = False
+			print(
+				f"{rawsubmesh.name}: base normals changed since import; "
+				"exporting computed shape key normals instead of the imported ones"
+			)
 		for shapeKey in shapeKeys:
 			for key in rawsubmesh.data.shape_keys.key_blocks:
 				if key.name != "Basis" and not _is_baked_shape_key(key):
@@ -1168,7 +1221,11 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		if fullNames:
 			meshObj.data.shape_keys[SHAPE_KEY_FULL_NAMES_PROPERTY] = fullNames
 		if importedNormals:
-			storeImportedKeyNormals(meshObj.data, importedNormals)
+			# File-space normals, as Keep Normals export compares them.
+			storeImportedKeyNormals(
+				meshObj.data, importedNormals,
+				vertexNormalList if len(vertexNormalList) else None,
+			)
 	
 	return meshObj
 
