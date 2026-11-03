@@ -26,7 +26,8 @@ normalization, the Wilds normal-group byte mapping and game version tables.
   weight bank import/export, Limit Total with DD2 banks and paint masks, UV
   and custom-normal seams kept by corner splitting, Wilds shape key export
   (Recalculate Normals and KEEPNORMALS modes, `DUMMY_` keys skipped), RE4
-  shape key export (float16 rows, LOD0 normal-recalc tables, reimport),
+  shape key export (float16 rows, LOD0 normal-recalc tables, reimport,
+  region targets with turned-normal rows, an error past the payload row limit),
   Onimusha WotS shape key export (Recalculate Normals and KEEPNORMALS), RE9
   shape key export (marker 1), MH Rise
   shape key export (both modes, empty channels kept), shape

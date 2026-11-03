@@ -140,17 +140,21 @@ def main():
 			assert re4.blendShapeHeader.count == 1
 			assert (body.targetCount, body.unknFlag, list(body.blendS)) == (1, int(mode == 1), [-1, 0, 0]), (
 				mode, body.targetCount, body.unknFlag, list(body.blendS))
-			# the key moves the only submesh, so no inactive target (vanilla chd500_01)
-			assert body.typing == 0 and list(body.blendSSList) == [-1], body.typing
+			# The target stores the rows the key moves (0 and 3, the one-row gap
+			# bridged); with Keep Normals also the rows whose normal it turns,
+			# which is every row of the quad, so no inactive target is left
+			# (vanilla chd500_01).
+			stored_rows = 4 if mode == 1 else 6
+			assert body.typing == int(mode == 1) and list(body.blendSSList) == [-1], body.typing
 			active = body.blendTargetList[0]
-			assert [(run.subMeshVertexStartIndex, run.vertCount) for run in active.subMeshEntryList] == [(0, 6)]
+			assert [(run.subMeshVertexStartIndex, run.vertCount) for run in active.subMeshEntryList] == [(0, stored_rows)]
 			header = re4.meshBufferHeader
 			start = (header.vertexElementSize & 0xFFFF) | ((header.unkn1 & 0xFFFF) << 16)
 			recalc = re4.fileHeader.normalRecalcOffset
 			if mode == 1:
 				# float16 rows (dx, dy, dz, 0) right after the vertex elements
-				rows = np.frombuffer(bytes(header.vertexBuffer[start:start + 6 * 8]), "<f2").reshape(6, 4)
-				assert np.allclose(rows[:, :3], expected_deltas, atol=.001) and not rows[:, 3].any()
+				rows = np.frombuffer(bytes(header.vertexBuffer[start:start + 4 * 8]), "<f2").reshape(4, 4)
+				assert np.allclose(rows[:, :3], expected_deltas[:4], atol=.001) and not rows[:, 3].any()
 				# LOD0 canonical tables (6 vertices, 6 indices, 16-byte padded) fill the
 				# section up to the blend header
 				count, = np.frombuffer(re4_output.read_bytes()[recalc:recalc + 8], "<u8")
@@ -169,6 +173,66 @@ def main():
 			assert np.allclose(re4_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001), (
 				mode, re4_submesh.blendShapeList[0].deltas)
 		print("PASS RE4 shape keys export in modes 1 (float16 rows + LOD0 tables)/KEEPNORMALS (no-recalc rows) and reimport", flush=True)
+
+		# RE4 LOD0 splits into region targets: Move stores rows 0 and 3, Other
+		# rows 2 and 4, two targets of 2 rows each instead of 2 keys x 6 rows.
+		re4_module = importlib.import_module(repo.name + ".modules.mesh.re4_blendshape")
+		other = obj.shape_key_add(name="Other", from_mix=False)
+		other.data[2].co.z = -.3
+		other_deltas = [(0, 0, 0), (0, 0, 0), (0, 0, -.3),
+						(0, 0, 0), (0, 0, -.3), (0, 0, 0)]
+		saved_limit = re4_module.PAYLOAD_ROW_LIMIT
+		try:
+			# Keep Normals without Static Normals: each key turns the normals of
+			# every row of the quad, so those rows stay in its target and the two
+			# keys share one.
+			turned_output = Path(temporary) / "re4-turned.mesh.221108797"
+			assert mesh_io.exportREMeshFile(str(turned_output), dict(
+				options, exportBlendShapes=True, blendShapeExportMode=-1))
+			body = codec.readREMesh(str(turned_output)).blendShapeHeader.blendShapeList[0]
+			assert body.targetCount == 1 and body.blendTargetList[0].blendShapeNum == 2
+			assert sum(run.vertCount for run in body.blendTargetList[0].subMeshEntryList) == 6
+			# Static Normals keys keep the base normal, so only moved rows count.
+			mesh_io.setStaticNormals(obj.data, "Move", True)
+			mesh_io.setStaticNormals(obj.data, "Other", True)
+			for mode in (1, -1):
+				split_output = Path(temporary) / ("re4-split-mode" + str(mode) + ".mesh.221108797")
+				assert mesh_io.exportREMeshFile(str(split_output), dict(
+					options, exportBlendShapes=True, blendShapeExportMode=mode))
+				re4 = codec.readREMesh(str(split_output))
+				body = re4.blendShapeHeader.blendShapeList[0]
+				active = body.blendTargetList[:body.targetCount]
+				assert body.targetCount == 2 and [target.unkn0 for target in active] == [0, 1], mode
+				assert [target.blendSSIndex for target in active] == [0, 1]
+				assert len(body.aabbList) == 2
+				assert sum(
+					run.vertCount * target.blendShapeNum
+					for target in active for run in target.subMeshEntryList
+				) == 4
+				re4_parsed = parse.ParsedREMesh()
+				re4_parsed.ParseREMesh(re4, {"importBlendShapes": True})
+				keys = {
+					key.blendShapeName: key.deltas
+					for key in re4_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList[0].blendShapeList
+				}
+				assert sorted(keys) == ["Move", "Other"], sorted(keys)
+				assert np.allclose(keys["Move"], expected_deltas, atol=.001), (mode, keys["Move"])
+				assert np.allclose(keys["Other"], other_deltas, atol=.001), (mode, keys["Other"])
+
+			# The split targets do not fit: the export stops and lists them.
+			re4_module.PAYLOAD_ROW_LIMIT = 3
+			try:
+				mesh_io.exportREMeshFile(str(Path(temporary) / "re4-over.mesh.221108797"), dict(
+					options, exportBlendShapes=True, blendShapeExportMode=1))
+			except Exception as error:
+				assert "Move" in str(error) and "Other" in str(error), error
+			else:
+				raise AssertionError("RE4 export past the payload row limit did not fail")
+		finally:
+			re4_module.PAYLOAD_ROW_LIMIT = saved_limit
+			mesh_io.setStaticNormals(obj.data, "Move", False)
+			obj.shape_key_remove(other)
+		print("PASS RE4 shape keys split into region targets, keep turned-normal rows, fail past the payload row limit", flush=True)
 
 		# Onimusha WotS: Wilds writer with the 16-byte later mesh-header fields
 		for mode in (1, -1):

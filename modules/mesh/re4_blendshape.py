@@ -26,6 +26,17 @@ Funnyguysmz fork, not in our extract): unknFlag 0, normalRecalcOffset 0, no
 tables, and each 8-byte row is [Wilds packed 11/10/11 delta scaled by the
 target AABB, the shape's int8 normal]. The fork's in-game test repeated the
 base normal on every key; per-key normals are untested in game.
+
+LOD0 is split into region targets as in Wilds (_region_targets): channels
+that move a common row share a target, and each target stores only the rows
+its channels move or turn. Vanilla has one active target per body in all 26
+RE4 meshes with blend shapes (2026-11-03 survey of all 7164 meshes), but runs
+that cut through submeshes are vanilla (chd000_00, sm61_344_00), and a
+5-target Leon body (cha000_00, 51 keys, 65.3 -> 18.0 MiB) worked in game on
+2026-11-03. A body with several targets gets no higher LOD bodies, so when
+higher LODs carry shape keys LOD0 keeps the vanilla layout and is split only
+past PAYLOAD_ROW_LIMIT, with the smallest target cap that fits; the game
+applies no shape key of a mesh whose payload rows pass that limit.
 """
 
 import struct
@@ -40,6 +51,17 @@ from . import mhwilds_blendshape as wilds
 # this is cha000_10's, which the known working mods also carry.
 BLEND_HEADER_HASH = 2615081718160
 NORMAL_RECALC_HEADER_BYTES = 48
+# Both row layouts are 8 bytes.
+ROW_BYTES = 8
+# In game (Leon body cha000_00, 2026-11-03, Keep Normals) a body whose rows
+# ended at 8555148 applied none of its 51 keys, the same file cut to 49 keys
+# (8219652 rows) applied all. The payload started 7.9 MB into the vertex
+# buffer, so the limit counts rows from the payload start: 2^23 rows (64 MiB).
+PAYLOAD_ROW_LIMIT = 1 << 23
+# Target caps tried in turn when a vanilla-layout LOD0 has to be split to fit.
+SPLIT_TARGET_CAPS = (1, 2, 4, 8, 16, 32, 64)
+# Active targets per LOD0 body when it is split by default (Wilds' cap).
+MAX_ACTIVE_TARGETS = wilds.MAX_ACTIVE_TARGETS_PER_BODY
 
 
 def _pack_rows(deltas):
@@ -49,10 +71,10 @@ def _pack_rows(deltas):
 	return rows.tobytes()
 
 
-def _pack_keep_normal_rows(deltas, normals, aabb):
+def _pack_keep_normal_rows(deltas, normal_rows, aabb):
 	"""Keep-normals rows: packed delta word, then the shape's int8 normal word."""
 	words = np.frombuffer(wilds._pack_delta_rows(deltas, aabb), dtype="<u4")
-	return np.column_stack((words, wilds._pack_normal_rows(normals))).astype("<u4").tobytes()
+	return np.column_stack((words, normal_rows)).astype("<u4").tobytes()
 
 
 def _new_target(channel_count, runs, lo):
@@ -67,8 +89,8 @@ def _new_target(channel_count, runs, lo):
 
 
 def _group_deltas(submeshes, names, keep_normals=False):
-	"""Deltas (and with keep_normals the row normals) of the given channels
-	over one viscon group's global range."""
+	"""(name, deltas, mask, normal rows) of the given channels over one viscon
+	group's global range; the packed normal rows only with keep_normals."""
 	lo = min(int(info.vertexStartIndex) for _parsed, info, _count in submeshes)
 	hi = max(int(info.vertexStartIndex) + count for _parsed, info, count in submeshes)
 	valid = np.zeros(hi - lo, dtype=bool)
@@ -94,7 +116,8 @@ def _group_deltas(submeshes, names, keep_normals=False):
 					parsed_submesh, name, base[start:start + count]
 				)
 		mask = np.any(np.abs(deltas) > wilds.EDIT_DELTA_THRESHOLD, axis=1)
-		channels.append((name, deltas, mask, normals))
+		rows = None if normals is None else wilds._pack_normal_rows(normals)
+		channels.append((name, deltas, mask, rows))
 	return lo, valid, ranges, channels
 
 
@@ -107,11 +130,94 @@ def _submesh_runs(mask, ranges):
 	return wilds._mask_runs(marked)
 
 
-def _build_body(lod, parsed_to_mesh_info, keep_normals, channel_order=None):
-	"""One blend body. LOD0 passes no order; higher LODs repeat LOD0's channels.
+def _whole_submesh_targets(submeshes, keep_normals, channel_order):
+	"""Vanilla layout: one target holding every channel over whole submeshes.
 
-	Returns (body, [(target, [(deltas, normals, runs)])], names) or None when
-	the LOD has no usable shape keys. normals is None without keep_normals.
+	Returns (lo, valid, [(runs, channels)]).
+	"""
+	if channel_order is None:
+		lo, valid, ranges, channels = _group_deltas(
+			submeshes, wilds._shape_names(submeshes), keep_normals
+		)
+		channels = [channel for channel in channels if channel[2].any()]
+	else:
+		lo, valid, ranges, channels = _group_deltas(
+			submeshes, channel_order, keep_normals
+		)
+		if not any(channel[2].any() for channel in channels):
+			channels = []
+	if not channels:
+		return lo, valid, []
+	mask = np.zeros(len(valid), dtype=bool)
+	for channel in channels:
+		mask |= channel[2]
+	runs = _submesh_runs(mask, ranges)
+	if len(runs) > wilds.MAX_TARGET_ENTRIES:
+		raise RuntimeError(
+			f"RE4 blend target needs {len(runs)} vertex runs, "
+			f"more than {wilds.MAX_TARGET_ENTRIES}"
+		)
+	return lo, valid, [(runs, channels)]
+
+
+def _split_channels(submeshes, keep_normals):
+	"""Wilds' group channels, masks reduced to rows that move or turn.
+
+	With keep_normals a channel's mask holds the rows whose normal it turns,
+	so those rows stay in its target. Wilds also keeps every row an imported
+	key stored; a reimported RE4 export stored base-normal rows over whole
+	submeshes, which would tie every key to them, so those rows are dropped.
+	"""
+	lo, valid, channels = wilds._group_channels(submeshes, with_normals=keep_normals)
+	if not keep_normals:
+		return lo, valid, channels
+	base = np.zeros((len(valid), 3), dtype=np.float32)
+	for parsed_submesh, info, count in submeshes:
+		start = int(info.vertexStartIndex) - lo
+		base[start:start + count] = wilds._base_normals(parsed_submesh, count)
+	base_rows = wilds._pack_normal_rows(base)
+	result = []
+	for name, deltas, _mask, rows in channels:
+		mask = np.any(np.abs(deltas) > wilds.EDIT_DELTA_THRESHOLD, axis=1)
+		mask |= valid & wilds._normal_rows_changed(rows, base_rows)
+		if mask.any():
+			result.append((name, deltas, mask, rows))
+	return lo, valid, result
+
+
+def _region_split_targets(groups, keep_normals, max_targets):
+	"""Wilds region targets over each group, max_targets shared by the body.
+
+	Returns one (lo, valid, [(runs, channels)]) per group.
+	"""
+	grouped = [_split_channels(submeshes, keep_normals) for submeshes in groups]
+	counts = [len(channels) for _lo, _valid, channels in grouped]
+	# Every group with channels needs a target of its own.
+	caps = wilds._split_target_cap(
+		counts, max(int(max_targets), sum(1 for count in counts if count))
+	)
+	planned = []
+	for (lo, valid, channels), cap in zip(grouped, caps):
+		targets = [
+			(runs, [channels[index] for index in cluster])
+			for cluster, runs in wilds._region_targets(
+				[channel[2] for channel in channels], valid, cap, ROW_BYTES
+			)
+		]
+		planned.append((lo, valid, targets))
+	return planned
+
+
+def _build_body(
+	lod, parsed_to_mesh_info, keep_normals, channel_order=None, max_targets=None
+):
+	"""One blend body. LOD0 passes no order; higher LODs repeat LOD0's channels.
+	max_targets None keeps the vanilla layout, a number splits into region
+	targets (LOD0 only).
+
+	Returns (body, [(target, [(deltas, normal rows, runs)])], names) or None
+	when the LOD has no usable shape keys. normal rows is None without
+	keep_normals.
 	"""
 	groups = wilds._viscon_submeshes(lod, parsed_to_mesh_info)
 	if not groups:
@@ -124,39 +230,27 @@ def _build_body(lod, parsed_to_mesh_info, keep_normals, channel_order=None):
 	active = []
 	inactive = []
 	names = []
-	for submeshes in groups:
-		if channel_order is None:
-			lo, valid, ranges, channels = _group_deltas(
-				submeshes, wilds._shape_names(submeshes), keep_normals
-			)
-			channels = [channel for channel in channels if channel[2].any()]
-		else:
-			lo, valid, ranges, channels = _group_deltas(
-				submeshes, channel_order, keep_normals
-			)
-			if not any(channel[2].any() for channel in channels):
-				channels = []
+	if max_targets is None:
+		planned = [
+			_whole_submesh_targets(submeshes, keep_normals, channel_order)
+			for submeshes in groups
+		]
+	else:
+		planned = _region_split_targets(groups, keep_normals, max_targets)
+	for lo, valid, targets in planned:
 		covered = np.zeros(len(valid), dtype=bool)
-		if channels:
-			mask = np.zeros(len(valid), dtype=bool)
-			for channel in channels:
-				mask |= channel[2]
-			runs = _submesh_runs(mask, ranges)
-			if len(runs) > wilds.MAX_TARGET_ENTRIES:
-				raise RuntimeError(
-					f"RE4 blend target needs {len(runs)} vertex runs, "
-					f"more than {wilds.MAX_TARGET_ENTRIES}"
-				)
+		for runs, channels in targets:
 			target = _new_target(len(channels), runs, lo)
 			target.unkn0 = len(active)
 			for start, end in runs:
 				covered[start:end] = True
+			# Per target, so one far-moving key does not coarsen the others.
 			body.aabbList.append(wilds._symmetric_aabb([
-				deltas[mask] for _name, deltas, mask, _normals in channels
+				deltas[mask] for _name, deltas, mask, _rows in channels
 			]))
 			active.append((
 				target,
-				[(deltas, normals, runs) for _name, deltas, _mask, normals in channels],
+				[(deltas, rows, runs) for _name, deltas, _mask, rows in channels],
 			))
 			names.extend(channel[0] for channel in channels)
 		rest = wilds._mask_runs(valid & ~covered)
@@ -174,6 +268,79 @@ def _build_body(lod, parsed_to_mesh_info, keep_normals, channel_order=None):
 	return body, active, names
 
 
+def _target_rows(target):
+	return sum(int(entry.vertCount) for entry in target.subMeshEntryList)
+
+
+def _body_rows(active):
+	return sum(_target_rows(target) * int(target.blendShapeNum) for target, _rows in active)
+
+
+def _row_limit_report(active, names):
+	lines = []
+	channel = 0
+	for index, (target, _rows) in enumerate(active):
+		count = int(target.blendShapeNum)
+		rows = _target_rows(target) * count
+		keys = names[channel:channel + count]
+		channel += count
+		shown = ", ".join(keys[:6]) + (", ..." if len(keys) > 6 else "")
+		lines.append(
+			f"  target {index}: {count} keys x {_target_rows(target)} rows = "
+			f"{rows * ROW_BYTES / 2**20:.1f} MiB ({shown})"
+		)
+	return "\n".join(lines)
+
+
+def _lod_shape_names(lod, parsed_to_mesh_info):
+	return {
+		name
+		for submeshes in wilds._viscon_submeshes(lod, parsed_to_mesh_info)
+		for name in wilds._shape_names(submeshes)
+	}
+
+
+def _raise_row_limit(built):
+	mesh_format.raiseError(
+		f"RE4 shape keys need {_body_rows(built[1])} payload rows even split "
+		f"into {len(built[1])} targets; the game applies no shape key past "
+		f"{PAYLOAD_ROW_LIMIT} rows ({PAYLOAD_ROW_LIMIT * ROW_BYTES // 2**20} MiB). "
+		"Remove shape keys or the vertices they move:\n"
+		+ _row_limit_report(built[1], built[2])
+	)
+
+
+def _build_lod0(lod, parsed_to_mesh_info, keep_normals, keep_lods):
+	"""LOD0 split into region targets. With keep_lods (higher LODs carry shape
+	keys) the vanilla layout, split only past the row limit."""
+	if not keep_lods:
+		built = _build_body(
+			lod, parsed_to_mesh_info, keep_normals, max_targets=MAX_ACTIVE_TARGETS
+		)
+		if built is not None and _body_rows(built[1]) > PAYLOAD_ROW_LIMIT:
+			_raise_row_limit(built)
+		return built
+	built = _build_body(lod, parsed_to_mesh_info, keep_normals)
+	if built is None:
+		return None
+	whole_rows = _body_rows(built[1])
+	if whole_rows <= PAYLOAD_ROW_LIMIT:
+		return built
+	for cap in SPLIT_TARGET_CAPS:
+		built = _build_body(lod, parsed_to_mesh_info, keep_normals, max_targets=cap)
+		if _body_rows(built[1]) <= PAYLOAD_ROW_LIMIT:
+			break
+	else:
+		_raise_row_limit(built)
+	mesh_format.raiseWarning(
+		f"RE4 shape keys over whole submeshes need {whole_rows} payload rows, "
+		f"more than the game's {PAYLOAD_ROW_LIMIT}; LOD0 was split into "
+		f"{len(built[1])} targets ({_body_rows(built[1])} rows):\n"
+		+ _row_limit_report(built[1], built[2])
+	)
+	return built
+
+
 def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 	"""Build the blend bodies, their name list and the payload."""
 	lods = wilds._list_or_empty(getattr(parsed_mesh, "mainMeshLODList", None))
@@ -181,22 +348,23 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		return None
 	keep_normals = wilds._keeps_normals(parsed_mesh=parsed_mesh)
 	wilds._drop_empty_shapes(lods)
-	built = _build_body(lods[0], parsed_to_mesh_info, keep_normals)
+	keep_lods = len(lods) > 1 and bool(_lod_shape_names(lods[1], parsed_to_mesh_info))
+	built = _build_lod0(lods[0], parsed_to_mesh_info, keep_normals, keep_lods)
 	if built is None:
 		return None
 	bodies = [built]
 	base_names = built[2]
+	total_rows = _body_rows(built[1])
 	for lod_index, lod in enumerate(lods[1:], start=1):
-		lod_names = {
-			name
-			for submeshes in wilds._viscon_submeshes(lod, parsed_to_mesh_info)
-			for name in wilds._shape_names(submeshes)
-		}
+		lod_names = _lod_shape_names(lod, parsed_to_mesh_info)
 		if not lod_names:
 			break
 		reason = None
 		if len(bodies[0][1]) != 1:
-			reason = "LOD0 has shape keys in more than one viscon group"
+			reason = (
+				"LOD0 has more than one blend target (shape keys in several "
+				"viscon groups, or split to fit the payload row limit)"
+			)
 		elif not lod_names <= set(base_names):
 			reason = "it has shape keys LOD0 does not have: " + ", ".join(
 				sorted(lod_names - set(base_names))
@@ -209,13 +377,18 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 				break
 			if len(built[1]) != 1:
 				reason = "its shape keys move more than one viscon group"
+			elif total_rows + _body_rows(built[1]) > PAYLOAD_ROW_LIMIT:
+				reason = (
+					f"the payload would pass the game's {PAYLOAD_ROW_LIMIT} rows"
+				)
 		if reason:
-			print(
+			mesh_format.raiseWarning(
 				f"RE4 shape keys exported for LOD0-LOD{lod_index - 1} only; "
 				f"LOD{lod_index} skipped because {reason}"
 			)
 			break
 		bodies.append(built)
+		total_rows += _body_rows(built[1])
 
 	header = mesh_format.BlendShapeHeader()
 	header.zero = 0
@@ -243,11 +416,11 @@ def build_re4_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 				entry.vertOffset = row + prefix
 				prefix += int(entry.vertCount)
 			aabb = body.aabbList[target_index]
-			for deltas, normals, runs in rows:
+			for deltas, normal_rows, runs in rows:
 				for start, end in runs:
 					if keep_normals:
 						payload.extend(_pack_keep_normal_rows(
-							deltas[start:end], normals[start:end], aabb
+							deltas[start:end], normal_rows[start:end], aabb
 						))
 					else:
 						payload.extend(_pack_rows(deltas[start:end]))
