@@ -353,8 +353,15 @@ def _evaluated_mesh_with_key_values(obj, values):
 		bpy.context.view_layer.update()
 
 
-def _geometric_corner_normals(mesh):
-	"""Corner normals of mesh with its custom normals reset to automatic."""
+def _geometric_corner_normals(mesh, inPlace=False):
+	"""Corner normals of mesh with its custom normals reset to automatic.
+
+	inPlace resets mesh itself instead of a copy, for a temporary mesh whose
+	custom normals are no longer needed (no bpy.data add/remove).
+	"""
+	if inPlace:
+		mesh.normals_split_custom_set([(0.0, 0.0, 0.0)] * len(mesh.loops))
+		return _corner_normal_arrays(mesh)[1]
 	plain = mesh.copy()
 	try:
 		plain.normals_split_custom_set([(0.0, 0.0, 0.0)] * len(plain.loops))
@@ -476,6 +483,16 @@ def _restore_shape_key_values(storedValues):
 	for key, value in storedValues:
 		key.value = value
 
+def _vertex_positions(mesh):
+	positions = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+	mesh.vertices.foreach_get("co", positions)
+	return positions.reshape((-1, 3))
+
+def _has_non_triangles(mesh):
+	sizes = np.empty(len(mesh.polygons), dtype=np.int32)
+	mesh.polygons.foreach_get("loop_total", sizes)
+	return bool(np.any(sizes != 3))
+
 def _corner_normal_arrays(mesh):
 	"""(vertex index, unit normal) of every corner of an evaluated mesh copy."""
 	count = len(mesh.loops)
@@ -593,9 +610,7 @@ def _build_blend_shape_entries_for_export(
 			basisTurnNormals = (
 				_geometric_corner_normals(rawBasisMesh) if surfaceTurn else basisCornerNormals
 			)
-		if any(
-			len(face.vertices) != 3 for face in rawBasisMesh.polygons
-		):
+		if _has_non_triangles(rawBasisMesh):
 			triangulateMesh(rawBasisMesh)
 
 		def positionKey(coordinate):
@@ -653,17 +668,25 @@ def _build_blend_shape_entries_for_export(
 				f"{rawsubmesh.name}: base normals changed since import; "
 				"exporting computed shape key normals instead of the imported ones"
 			)
+		basisPositions = _vertex_positions(rawBasisMesh)
+		mappedRows = np.asarray(mappedSourceIndices, dtype=np.int64)
+		mappedInBasis = (mappedRows >= 0) & (mappedRows < len(basisPositions))
+		# _temporarily_zero_shape_key_values zeroed every exported key, so
+		# only the previous key needs resetting.
+		previousKey = None
 		for shapeKey in shapeKeys:
-			for key in rawsubmesh.data.shape_keys.key_blocks:
-				if key.name != "Basis" and not _is_baked_shape_key(key):
-					key.value = 0.0
+			if previousKey is not None:
+				previousKey.value = 0.0
 			shapeKey.value = 1.0
+			previousKey = shapeKey
 			rawsubmesh.data.update()
 			bpy.context.view_layer.update()
 			depsgraph = bpy.context.evaluated_depsgraph_get()
-			shapeMesh = bpy.data.meshes.new_from_object(
-				rawsubmesh.evaluated_get(depsgraph)
-			)
+			# to_mesh, not new_from_object: adding and removing a mesh in
+			# bpy.data per key made the next update rebuild the whole scene's
+			# depsgraph (~0.1 s per key in a scene with thousands of objects).
+			evaluatedSubmesh = rawsubmesh.evaluated_get(depsgraph)
+			shapeMesh = evaluatedSubmesh.to_mesh()
 			shapeNormals = None
 			try:
 				shapeMesh.transform(transformMatrix)
@@ -676,7 +699,10 @@ def _build_blend_shape_entries_for_export(
 					)
 					if np.array_equal(shapeCornerVertices, basisCornerVertices):
 						if surfaceTurn:
-							shapeCornerNormals = _geometric_corner_normals(shapeMesh)
+							# In place: shapeMesh's normals are not read again
+							shapeCornerNormals = _geometric_corner_normals(
+								shapeMesh, inPlace=True
+							)
 						shapeNormals = baseNormals.copy()
 						corners = rowCorners[hasCorner]
 						shapeNormals[hasCorner] = _rotate_normals(
@@ -689,35 +715,18 @@ def _build_blend_shape_entries_for_export(
 							f"Shape key {shapeKey.name} on {rawsubmesh.name} changes "
 							"topology; exporting its base normals"
 						)
-				if any(
-					len(face.vertices) != 3
-					for face in shapeMesh.polygons
-				):
+				if _has_non_triangles(shapeMesh):
 					triangulateMesh(shapeMesh)
-				deltas = []
-				for rowIndex, sourceIndex in enumerate(
-					sourceVertexIndexList
-				):
-					sourceIndex = int(sourceIndex)
-					mappedIndex = mappedSourceIndices[rowIndex]
-					if (
-						0 <= mappedIndex < len(shapeMesh.vertices)
-						and mappedIndex < len(rawBasisMesh.vertices)
-					):
-						delta = (
-							shapeMesh.vertices[mappedIndex].co
-							- rawBasisMesh.vertices[mappedIndex].co
-						)
-						deltas.append(
-							(float(delta.x), float(delta.y), float(delta.z))
-						)
-					else:
-						deltas.append((0.0, 0.0, 0.0))
+				shapePositions = _vertex_positions(shapeMesh)
+				valid = mappedInBasis & (mappedRows < len(shapePositions))
+				deltas = np.zeros((len(mappedRows), 3), dtype=np.float32)
+				validRows = mappedRows[valid]
+				deltas[valid] = shapePositions[validRows] - basisPositions[validRows]
 			finally:
-				bpy.data.meshes.remove(shapeMesh)
+				evaluatedSubmesh.to_mesh_clear()
 			entry = BlendShape()
 			entry.blendShapeName = _export_shape_key_name(rawsubmesh.data, shapeKey)
-			entry.deltas = np.asarray(deltas, dtype=np.float32)
+			entry.deltas = deltas
 			entry.normals = shapeNormals
 			if useImportedNormals and not hasStaticNormals(rawsubmesh.data, shapeKey):
 				words = importedKeyNormalWords(rawsubmesh.data, shapeKey)
