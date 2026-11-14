@@ -544,6 +544,39 @@ def _rotate_normals(normals, source, target):
 	return np.where((cos > 0.9999999)[:, None], normals, result).astype(np.float32)
 
 
+SOURCE_VERTEX_ATTRIBUTE = "REME_SourceVertex"
+
+
+def _tag_source_vertices(meshData):
+	"""Store each vertex's own index, carried onto split copies by bmesh."""
+	attribute = meshData.attributes.get(SOURCE_VERTEX_ATTRIBUTE)
+	if attribute is not None:
+		meshData.attributes.remove(attribute)
+	attribute = meshData.attributes.new(
+		name=SOURCE_VERTEX_ATTRIBUTE, type="INT", domain="POINT"
+	)
+	attribute.data.foreach_set(
+		"value", np.arange(len(meshData.vertices), dtype=np.int32)
+	)
+
+
+def _read_source_vertex_attribute(meshData, sourceVertexCount):
+	"""Tagged source indices of meshData, or None when missing or out of range."""
+	attribute = meshData.attributes.get(SOURCE_VERTEX_ATTRIBUTE)
+	if (
+		attribute is None
+		or attribute.domain != "POINT"
+		or attribute.data_type != "INT"
+		or len(attribute.data) != len(meshData.vertices)
+	):
+		return None
+	values = np.empty(len(attribute.data), dtype=np.int32)
+	attribute.data.foreach_get("value", values)
+	if len(values) and (values.min() < 0 or values.max() >= sourceVertexCount):
+		return None
+	return values
+
+
 def _build_blend_shape_entries_for_export(
 	rawsubmesh,
 	sourceVertexIndexList,
@@ -620,13 +653,29 @@ def _build_blend_shape_entries_for_export(
 				round(float(coordinate.z), 6),
 			)
 
+		# The clone tags each vertex with its evaluated index before any
+		# split; split copies inherit it. Pairing by position instead picks
+		# an arbitrary one of coincident vertices (closed lips, nail seams)
+		# and swaps their deltas.
+		cloneSourceVertices = _read_source_vertex_attribute(
+			evaluatedBasisMesh, len(rawBasisMesh.vertices)
+		)
 		positionToRawIndices = {}
-		for rawIndex, vertex in enumerate(rawBasisMesh.vertices):
-			positionToRawIndices.setdefault(
-				positionKey(vertex.co), []
-			).append(rawIndex)
+		if cloneSourceVertices is None:
+			for rawIndex, vertex in enumerate(rawBasisMesh.vertices):
+				positionToRawIndices.setdefault(
+					positionKey(vertex.co), []
+				).append(rawIndex)
 		mappedSourceIndices = []
 		for sourceIndex in sourceVertexIndexList:
+			if cloneSourceVertices is not None:
+				sourceIndex = int(sourceIndex)
+				mappedSourceIndices.append(
+					int(cloneSourceVertices[sourceIndex])
+					if 0 <= sourceIndex < len(cloneSourceVertices)
+					else -1
+				)
+				continue
 			sourceIndex = int(sourceIndex)
 			if 0 <= sourceIndex < len(basisCoordinates):
 				candidates = positionToRawIndices.get(
@@ -2228,6 +2277,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						obj.data.update()
 						bpy.context.view_layer.update()
 					_bake_locked_key_normals(obj, cloneObj.data)
+					_tag_source_vertices(cloneObj.data)
 				else:
 					cloneObj.data = bpy.data.meshes.new_from_object(
 						obj.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg
