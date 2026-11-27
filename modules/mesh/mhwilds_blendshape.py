@@ -153,6 +153,38 @@ def _shape_names(parsed_submeshes):
 	return names
 
 
+def _report_duplicate_shape_names(lod_index, shape_names):
+	"""Warn when one LOD repeats a blend shape channel name.
+
+	The engine resolves blend shapes by channel name, one binding slot per unique
+	name. A LOD that repeats a name still exports, but its runtime binding is
+	smaller than its channel list, so a draw that indexes past the last unique
+	name reads unrelated memory as a shape pointer. RE9 crashes in the render
+	thread (re9+0x55b3d50, ``lock inc dword ptr [rcx+8]``) even with the
+	character standing idle. Native meshes avoid this by naming channels
+	uniquely per submesh, for example
+	``HeadSkinned_blendShape_LOD2.UprLpRs_04_L_LOD2``.
+
+	Names are per Blender object, not per submesh, so several submeshes carrying
+	the same keys (a face part and a brow part both holding the same expression)
+	end up as repeated channels here. Renaming the keys uniquely fixes the mesh;
+	merging the channels instead would discard the other submesh's deltas.
+	"""
+	repeated = [name for name, count in Counter(shape_names).items() if count > 1]
+	if not repeated:
+		return
+	print(
+		f"WARNING: blendshape LOD{lod_index} repeats channel names: "
+		f"{len(shape_names)} channels but {len(set(shape_names))} unique names ("
+		+ ", ".join(repeated[:8])
+		+ "). The engine binds one slot per unique name, so a draw that indexes "
+		"past the last unique channel reads past the binding table; RE9 crashes "
+		"in the render thread. Give each submesh's shape keys distinct names "
+		"(native prefixes them per submesh) instead of reusing one name across "
+		"submeshes."
+	)
+
+
 def _normalized_deltas(parsed_submesh, shape_name, vertex_count):
 	entry = _shape_entry(parsed_submesh, shape_name)
 	if entry is None:
@@ -907,6 +939,8 @@ def build_blend_shape_plan(
 			else:
 				body.blendS = [index if index < count else 0 for index in range(3)]
 		body_shape_names = tuple(body_shape_names)
+		if alias_owner is None:
+			_report_duplicate_shape_names(lod_index, body_shape_names)
 		if alias_owner is not None:
 			owner_shape_names = body_shape_name_sets[alias_owner]
 			if body_shape_names != owner_shape_names:
