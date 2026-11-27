@@ -291,6 +291,72 @@ def main():
 			assert np.allclose(re9_submesh.blendShapeList[0].deltas, expected_deltas, atol=.001)
 		print("PASS RE9 modes 1/KEEPNORMALS export and reimport shape keys", flush=True)
 
+		# Names shared by several submeshes take one channel per body, as in
+		# vanilla; a repeated name crashed RE9. Keys form a cycle (Move+Third,
+		# Move+Other, Other+Third), so one target has to span a channel it
+		# does not have and stores zero rows for it.
+		third = obj.shape_key_add(name="Third", from_mix=False)
+		# Every key moves vertex 0 (rows 0 and 3), so the two keys of a
+		# submesh share one target.
+		third.data[0].co.x = .1
+		third_deltas = np.zeros((6, 3))
+		third_deltas[[0, 3], 0] = .1
+		second = bpy.data.objects.new("LOD_0_Group_0_Sub_1__MeshFixMaterial", data.copy())
+		third_obj = bpy.data.objects.new("LOD_0_Group_0_Sub_2__MeshFixMaterial", data.copy())
+		for extra in (second, third_obj):
+			seam_collection.objects.link(extra)
+		second.shape_key_remove(second.data.shape_keys.key_blocks["Third"])
+		third_obj.shape_key_remove(third_obj.data.shape_keys.key_blocks["Move"])
+		other_deltas = np.zeros((6, 3))
+		for extra in (second, third_obj):
+			key = extra.shape_key_add(name="Other", from_mix=False)
+			key.data[0].co.y = .15
+		other_deltas[[0, 3], 1] = .15
+		expected = {
+			0: {"Move": expected_deltas, "Third": third_deltas},
+			1: {"Move": expected_deltas, "Other": other_deltas},
+			2: {"Other": other_deltas, "Third": third_deltas},
+		}
+		try:
+			for mode in (1, -1):
+				shared_output = Path(temporary) / ("re9-shared-mode" + str(mode) + ".mesh.250925211")
+				assert mesh_io.exportREMeshFile(str(shared_output), dict(
+					options, exportBlendShapes=True, blendShapeExportMode=mode))
+				re9 = codec.readREMesh(str(shared_output))
+				names = [re9.rawNameList[index] for index in re9.blendShapeNameRemapList]
+				assert sorted(names) == ["Move", "Other", "Third"], names
+				body = re9.blendShapeHeader.blendShapeList[0]
+				assert body.unknFlag == 3 << 16 and list(body.blendSSList[:3]) == [0, 1, 2]
+				active = body.blendTargetList[:body.targetCount]
+				assert body.targetCount == 3, (mode, body.targetCount, [
+					(t.blendSSIndex, t.blendShapeNum, [(e.subMeshVertexStartIndex, e.vertCount) for e in t.subMeshEntryList])
+					for t in body.blendTargetList])
+				ranges = [(target.blendSSIndex, target.blendShapeNum) for target in active]
+				assert all(start + count <= 3 for start, count in ranges), ranges
+				assert sum(count for _start, count in ranges) == 7, ranges  # 6 used + 1 zero channel
+				# Run words carry the submesh's material index (all three use
+				# material 0), not its index in the group: the game indexes the
+				# material table with it.
+				words = {
+					entry.paramUnkn3 for target in body.blendTargetList
+					for entry in target.subMeshEntryList
+				}
+				assert len(re9.materialNameRemapList) == 1 and words == {0}, (mode, words)
+				re9_parsed = parse.ParsedREMesh()
+				re9_parsed.ParseREMesh(re9, {"importBlendShapes": True})
+				submeshes = re9_parsed.mainMeshLODList[0].visconGroupList[0].subMeshList
+				for index, submesh in enumerate(submeshes):
+					keys = {key.blendShapeName: np.asarray(key.deltas) for key in submesh.blendShapeList}
+					for name, deltas in keys.items():
+						wanted = expected[index].get(name, np.zeros((6, 3)))
+						assert np.allclose(deltas, wanted, atol=.001), (mode, index, name, deltas)
+					assert set(expected[index]) <= set(keys), (mode, index, sorted(keys))
+		finally:
+			for extra in (second, third_obj):
+				bpy.data.objects.remove(extra)
+			obj.shape_key_remove(third)
+		print("PASS RE9 shape names shared by submeshes take one channel, zero rows fill a range", flush=True)
+
 		# MH Rise: pre-SF6 target over the whole submesh, every channel kept
 		# (an empty one too), packed rows (+ normal words without recalculation)
 		still = obj.shape_key_add(name="Still", from_mix=False)

@@ -29,7 +29,8 @@ normalization, the Wilds normal-group byte mapping and game version tables.
   shape key export (float16 rows, LOD0 normal-recalc tables, reimport,
   region targets with turned-normal rows, an error past the payload row limit),
   Onimusha WotS shape key export (Recalculate Normals and KEEPNORMALS), RE9
-  shape key export (marker 1), MH Rise
+  shape key export (marker 1; a name shared by several submeshes takes one
+  channel, targets take contiguous channel ranges), MH Rise
   shape key export (both modes, empty channels kept), shape
   key names longer than Blender's 63 bytes kept through import and export.
 - `test_export_reliability_blender.py`: export cleanup on success and failure,

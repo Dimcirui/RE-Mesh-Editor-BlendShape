@@ -483,23 +483,28 @@ def _run_entries(runs, lo):
 
 
 def _re9_split_runs(lod, parsed_to_mesh_info, active_targets, inactive_targets):
-	"""RE9 runs stay inside one submesh and carry a run word: (index of that
-	submesh within its viscon group << 8) | visconGroupID, as in every vanilla
-	RE9 run. Splitting keeps the payload order, so offsets are unchanged.
-	Returns the inactive targets, rechunked to the entry limit."""
+	"""RE9 runs stay inside one submesh and carry a run word: (material index
+	of that submesh << 8) | visconGroupID, as in vanilla RE9 runs. The game
+	indexes the mesh's material table with the high byte, so a value at or
+	past the material count (a submesh's index in its group, on meshes with
+	more submeshes than materials) read out of bounds and crashed. Splitting
+	keeps the payload order, so offsets are unchanged. Returns the inactive
+	targets, rechunked to the entry limit."""
 	starts = []
 	for order, viscon in enumerate(
 		_list_or_empty(getattr(lod, "visconGroupList", None))
 	):
 		group_id = int(getattr(viscon, "visconGroupNum", order) or 0)
-		for index, parsed_submesh in enumerate(
-			_list_or_empty(getattr(viscon, "subMeshList", None))
-		):
+		for parsed_submesh in _list_or_empty(getattr(viscon, "subMeshList", None)):
 			mesh_info = parsed_to_mesh_info.get(parsed_submesh)
 			if mesh_info is not None:
-				starts.append((int(mesh_info.vertexStartIndex), index, group_id))
+				starts.append((
+					int(mesh_info.vertexStartIndex),
+					int(mesh_info.materialIndex),
+					group_id,
+				))
 	starts.sort()
-	bounds = [start for start, _index, _group in starts]
+	bounds = [start for start, _material, _group in starts]
 
 	def split(entries):
 		result = []
@@ -517,8 +522,8 @@ def _re9_split_runs(lod, parsed_to_mesh_info, active_targets, inactive_targets):
 				piece.vertCount = piece_end - vertex
 				piece.paramUnkn3 = 0
 				if slot >= 0:
-					_start, index, group_id = starts[slot]
-					piece.paramUnkn3 = ((index & 0xFFFFFF) << 8) | (group_id & 0xFF)
+					_start, material, group_id = starts[slot]
+					piece.paramUnkn3 = ((material & 0xFFFFFF) << 8) | (group_id & 0xFF)
 				result.append(piece)
 				vertex = piece_end
 		return result
@@ -686,6 +691,53 @@ def _region_targets(masks, valid, max_targets, row_bytes):
 		return result
 
 
+def _channel_order(target_names, target_rows):
+	"""Order a body's shape names so that each target's names are close together.
+
+	A target covers a contiguous channel range, and every channel in that
+	range it does not have costs a zero row per vertex of the target. Names
+	are sorted by which targets use them, in reflected Gray-code order with
+	the targets ranked by row count: the two largest targets get exact
+	ranges, smaller ones may span a few extra channels. The first-ranked
+	target starts at channel 0; ties keep the first-seen name order.
+	"""
+	names = []
+	seen = set()
+	for target in target_names:
+		for name in target:
+			if name not in seen:
+				seen.add(name)
+				names.append(name)
+	ranked = sorted(
+		range(len(target_names)), key=lambda index: -int(target_rows[index])
+	)
+	members = [set(target_names[index]) for index in ranked]
+
+	def rank(item):
+		first_seen, name = item
+		key = []
+		parity = 0
+		for level, member in enumerate(members):
+			bit = int(name in member)
+			if level == 0:
+				bit ^= 1  # members of the largest target first
+			parity ^= bit
+			key.append(parity)
+		return key, first_seen
+
+	return [name for _first_seen, name in sorted(enumerate(names), key=rank)]
+
+
+def _group_base_rows(submeshes, lo, size):
+	"""Packed base normals over a group's range [lo, lo + size), for the
+	second rows of channels a target stores as zero."""
+	base = np.zeros((size, 3), dtype=np.float32)
+	for parsed_submesh, info, count in submeshes:
+		start = int(info.vertexStartIndex) - lo
+		base[start:start + count] = _base_normals(parsed_submesh, count)
+	return _pack_normal_rows(base)
+
+
 def _drop_empty_shapes(lods):
 	"""Remove shape channels that move no vertex on any submesh of any LOD.
 
@@ -817,8 +869,14 @@ def build_blend_shape_plan(
 		group_caps = _split_target_cap(
 			[len(channels) for _lo, _valid, channels in grouped], max_targets
 		)
-		for (lo, valid, channels), group_cap in zip(grouped, group_caps):
+		specs = []
+		for submeshes, (lo, valid, channels), group_cap in zip(
+			submesh_groups, grouped, group_caps
+		):
 			covered = np.zeros(len(valid), dtype=bool)
+			base_rows = (
+				_group_base_rows(submeshes, lo, len(valid)) if keep_normals else None
+			)
 			for cluster, runs in _region_targets(
 				[channel[2] for channel in channels],
 				valid,
@@ -826,8 +884,6 @@ def build_blend_shape_plan(
 				row_bytes,
 			):
 				target = mesh_format.BlendTarget()
-				target.blendSSIndex = body_remap_base + body_channel_count
-				target.blendShapeNum = len(cluster)
 				# Vanilla: index of the first target with the same run set.
 				run_key = tuple(runs)
 				target.unkn0 = next(
@@ -846,33 +902,21 @@ def build_blend_shape_plan(
 				for start, end in runs:
 					covered[start:end] = True
 
-				aabb = _symmetric_aabb([
+				body.aabbList.append(_symmetric_aabb([
 					channels[channel_index][1][channels[channel_index][2]]
 					for channel_index in cluster
-				])
-				body.aabbList.append(aabb)
-				for channel_index in cluster:
-					deltas = channels[channel_index][1]
-					rows = channels[channel_index][3]
-					for start, end in runs:
-						body_payload.extend(
-							_pack_delta_rows(deltas[start:end], aabb)
-						)
-						if rows is not None:
-							body_second_rows.append(rows[start:end])
-
-				names = [channels[channel_index][0] for channel_index in cluster]
+				]))
 				active_targets.append(target)
-				body_shape_names.extend(names)
-				if alias_owner is None:
-					remap_names.extend(names)
-				body.blendSSList.extend(
-					range(
-						body_channel_count,
-						body_channel_count + len(cluster),
-					)
-				)
-				body_channel_count += len(cluster)
+				specs.append({
+					"target": target,
+					"runs": runs,
+					"rows": sum(end - start for start, end in runs),
+					"baseRows": base_rows,
+					"channels": {
+						channels[channel_index][0]: channels[channel_index]
+						for channel_index in cluster
+					},
+				})
 
 			# Vanilla covers every remaining vertex of the viscon group with
 			# inactive targets, disjoint from the active runs.
@@ -888,6 +932,49 @@ def build_blend_shape_plan(
 				)
 				target.subMeshEntryCount = len(target.subMeshEntryList)
 				inactive_targets.append(target)
+
+		# One channel per shape name in the body, as in vanilla: targets of
+		# several submeshes or objects that share a name use the same channel.
+		# The game counts channels by name, so a repeated name sent RE9 reads
+		# past the channel list (crash). Each target takes a contiguous range
+		# of channels; channels in its range it does not have get zero rows.
+		used_names = {name for spec in specs for name in spec["channels"]}
+		if alias_owner is None:
+			order = _channel_order(
+				[list(spec["channels"]) for spec in specs],
+				[spec["rows"] for spec in specs],
+			)
+		else:
+			order = list(body_shape_name_sets[alias_owner])
+			if used_names != set(order):
+				raise RuntimeError(
+					"Shared Wilds blend LOD has different shape channels: "
+					f"LOD{lod_index}->LOD{alias_owner}"
+				)
+		position = {name: index for index, name in enumerate(order)}
+		for spec, aabb in zip(specs, body.aabbList):
+			indices = [position[name] for name in spec["channels"]]
+			first, last = min(indices), max(indices)
+			spec["target"].blendSSIndex = body_remap_base + first
+			spec["target"].blendShapeNum = last - first + 1
+			for name in order[first:last + 1]:
+				channel = spec["channels"].get(name)
+				for start, end in spec["runs"]:
+					if channel is None:
+						body_payload.extend(
+							np.full(end - start, ZERO_DELTA_ROW, dtype="<u4").tobytes()
+						)
+						if keep_normals:
+							body_second_rows.append(spec["baseRows"][start:end])
+						continue
+					body_payload.extend(_pack_delta_rows(channel[1][start:end], aabb))
+					if channel[3] is not None:
+						body_second_rows.append(channel[3][start:end])
+		body_channel_count = len(order)
+		body_shape_names = order
+		if alias_owner is None:
+			remap_names.extend(order)
+		body.blendSSList = list(range(body_channel_count))
 
 		if int(version) == mesh_format.VERSION_RE9:
 			inactive_targets = _re9_split_runs(
@@ -908,12 +995,6 @@ def build_blend_shape_plan(
 				body.blendS = [index if index < count else 0 for index in range(3)]
 		body_shape_names = tuple(body_shape_names)
 		if alias_owner is not None:
-			owner_shape_names = body_shape_name_sets[alias_owner]
-			if body_shape_names != owner_shape_names:
-				raise RuntimeError(
-					"Shared Wilds blend LOD has different shape channels: "
-					f"LOD{lod_index}->LOD{alias_owner}"
-				)
 			owner_body = header.blendShapeList[alias_owner]
 			owner_channel_count = int(
 				getattr(owner_body, "_mhwildsChannelCount", 0)
@@ -2310,20 +2391,30 @@ def write_mhwilds_mesh(re_mesh, filepath):
 		serialized_flag = struct.unpack_from(
 			"<I", verification_data, body_offset + 4
 		)[0]
+		serialized_target_count = struct.unpack_from(
+			"<H", verification_data, body_offset
+		)[0]
 		serialized_data_offset = struct.unpack_from(
 			"<Q", verification_data, body_offset + 16
-		)[0]
-		serialized_target_base = struct.unpack_from(
-			"<H", verification_data, serialized_data_offset
 		)[0]
 		if (serialized_flag & 0xFFFF) != int(expected_base):
 			raise RuntimeError(
 				"body remap flag mismatch at LOD"
 				f"{body_index}: {(serialized_flag & 0xFFFF)}/{expected_base}"
 			)
-		if serialized_target_base != int(expected_base):
-			raise RuntimeError(
-				"target remap base mismatch at LOD"
-				f"{body_index}: {serialized_target_base}/{expected_base}"
+		# Every active target's channel range stays inside its body's range.
+		channel_end = int(expected_base) + (serialized_flag >> 16)
+		for target_index in range(serialized_target_count):
+			target_base, target_channels = struct.unpack_from(
+				"<HH", verification_data, serialized_data_offset + 16 * target_index
 			)
+			if (
+				target_base < int(expected_base)
+				or target_base + target_channels > channel_end
+			):
+				raise RuntimeError(
+					"target remap range outside its body at LOD"
+					f"{body_index}: {target_base}+{target_channels}, "
+					f"body {expected_base}..{channel_end}"
+				)
 	return None
